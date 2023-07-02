@@ -15,7 +15,7 @@ pub use winit;
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 // todo, find an appropriate data structure to resolve this from basic info
 // todo, animation
-// todo, collision
+// todo, square collision
 /// specify the depth as 0.5 to enable y sorting
 pub struct Sprite {
     pub pos_x: f32,
@@ -34,8 +34,9 @@ pub struct Sprite {
     pub origin: f32,
 
     pub frames: u32,
-    /// if positive it loops all the time, if negative it only plays once
+    /// if positive plays forward, else plays backward
     pub duration: f32,
+    pub looping: u32,
 }
 impl Sprite {
     fn new_empty() -> Self {
@@ -55,6 +56,7 @@ impl Sprite {
 
             duration: 0.0,
             frames: 0,
+            looping: 0,
         }
     }
 }
@@ -72,6 +74,10 @@ pub struct Uniform {
     pub window_height: f32,
     /// read
     pub utime: f32,
+    /// read
+    pub last_utime: f32,
+    /// read
+    pub delta_time: f32,
     /// write
     pub global_offset_x: f32,
     /// write
@@ -366,6 +372,8 @@ pub fn run(
         window_width: 0.0,
         window_height: 0.0,
         utime: 0.0,
+        last_utime: 0.0,
+        delta_time: 0.0,
         global_offset_x: 0.0,
         global_offset_y: 0.0,
     };
@@ -620,13 +628,21 @@ pub fn run(
             winit::event::Event::RedrawRequested(_) => {
                 // local uniform -> table uniform
                 uniform_data.utime = start_time.elapsed().as_secs_f32();
+                uniform_data.delta_time = uniform_data.utime - uniform_data.last_utime;
                 let uni = ecs.table.read_state::<Uniform>().unwrap();
                 uni.utime = uniform_data.utime;
                 uni.window_width = uniform_data.window_width;
                 uni.window_height = uniform_data.window_height;
+                uni.delta_time = uniform_data.delta_time;
+                uni.last_utime = uniform_data.last_utime;
+
+                // println!("{:?}", uniform_data.delta_time);
 
                 // ecs ticking
                 ecs.tick();
+
+                // after ticking we can adjust the last_utime
+                uniform_data.last_utime = uniform_data.utime;
 
                 // reset some states after ticking
                 ecs.table.read_state::<KeyState>().unwrap().reset();

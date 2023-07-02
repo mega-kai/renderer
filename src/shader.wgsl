@@ -5,6 +5,8 @@ struct Uniform {
     window_width: f32,
     window_height: f32,
     utime: f32,
+    last_utime: f32,
+    delta_time: f32,
     global_offset_x: f32,
     global_offset_y: f32,
 }
@@ -26,6 +28,7 @@ struct Sprite {
     frames: u32,
     /// if positive it loops all the time, if negative it only plays once
     duration: f32,
+    looping: u32,
 }
 
 struct Animation {
@@ -41,6 +44,7 @@ struct VertexOutput {
     @location(2) tex_height: i32,
     @location(3) tex_x: i32,
     @location(4) tex_y: i32,
+    @location(5) animated_x: u32,
 }
 
 
@@ -109,15 +113,36 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
             out.tex_coords = vec2<f32>();
         }
     }
+
+    var animated_x = 0u;
+    if current_sprite.frames > 1u {
+        if anim_storage_array[sprite_index].counter >= current_sprite.duration {
+            if anim_storage_array[sprite_index].current_frame < current_sprite.frames - 1u {
+                anim_storage_array[sprite_index].current_frame = anim_storage_array[sprite_index].current_frame + 1u;
+            } else {
+                anim_storage_array[sprite_index].current_frame = 0u;
+            }
+            anim_storage_array[sprite_index].counter = 0.0;
+        } else {
+            anim_storage_array[sprite_index].counter += uniform_data.delta_time;
+        }
+        animated_x = anim_storage_array[sprite_index].current_frame * u32(current_sprite.tex_width);
+    }
+
     out.tex_width = i32(current_sprite.tex_width);
     out.tex_height = i32(current_sprite.tex_height);
     out.tex_x = i32(current_sprite.tex_x);
     out.tex_y = i32(current_sprite.tex_y);
+    out.animated_x = animated_x;
     return out;
 }
 
-@fragment
+    @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var result = textureLoad(texture, vec2<i32>(i32(in.tex_coords.x) % in.tex_width + in.tex_x, i32(in.tex_coords.y) % in.tex_height + in.tex_y), 0);
+    var result: vec4<f32>;
+    // result = textureLoad(texture, vec2<i32>(i32(in.tex_coords.x) + i32(in.animated_x), i32(in.tex_coords.y)), 0);
+    result = textureLoad(texture, vec2<i32>(i32(in.tex_coords.x) % in.tex_width + in.tex_x + i32(in.animated_x), i32(in.tex_coords.y) % in.tex_height + in.tex_y), 0);
+    
+    // result.x = abs(sin(uniform_data.utime));
     return result;
 }
