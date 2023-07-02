@@ -26,8 +26,15 @@ pub struct Sprite {
     pub tex_x: f32,
     pub tex_y: f32,
 
+    pub tex_width: f32,
+    pub tex_height: f32,
+
     pub depth: f32,
     pub origin: f32,
+
+    pub frames: u32,
+    /// if positive it loops all the time, if negative it only plays once
+    pub duration: f32,
 }
 impl Sprite {
     fn new_empty() -> Self {
@@ -39,9 +46,14 @@ impl Sprite {
 
             tex_x: 0.0,
             tex_y: 0.0,
+            tex_height: 0.0,
+            tex_width: 0.0,
 
             depth: 0.0,
             origin: 0.0,
+
+            duration: 0.0,
+            frames: 0,
         }
     }
 }
@@ -57,8 +69,9 @@ pub struct Uniform {
     pub utime: f32,
     pub mouse_x: f32,
     pub mouse_y: f32,
-    pub cam_offset_x: f32,
-    pub cam_offset_y: f32,
+    // todo move cam functionality, in pixel
+    pub global_offset_x: f32,
+    pub global_offset_y: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -179,7 +192,7 @@ pub fn run(
 
     // uniform data
     let mut uniform_data = Uniform {
-        height_resolution: minimal_height_resolution as f32 / 2.0,
+        height_resolution: minimal_height_resolution as f32,
         texture_width: texture_data.width() as f32,
         texture_height: texture_data.height() as f32,
         window_width: 0.0,
@@ -187,8 +200,8 @@ pub fn run(
         utime: 0.0,
         mouse_x: 0.0,
         mouse_y: 0.0,
-        cam_offset_x: 0.0,
-        cam_offset_y: 0.0,
+        global_offset_x: 0.0,
+        global_offset_y: 0.0,
     };
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -408,8 +421,6 @@ pub fn run(
     // custom prep work done to ecs
     (prep_func)(&mut ecs.table);
 
-    ecs.tick();
-
     event_loop.run(move |event, _, control_flow| {
         match ecs.table.read_resource::<RunningState>().unwrap() {
             RunningState::Running => control_flow.set_poll(),
@@ -420,26 +431,27 @@ pub fn run(
             winit::event::Event::RedrawRequested(_) => {
                 // update utime
                 uniform_data.utime = start_time.elapsed().as_secs_f32();
-
-                // update height resolution
-                let res = ecs
-                    .table
-                    .read_resource::<Uniform>()
-                    .unwrap()
-                    .height_resolution;
-                uniform_data.height_resolution = if res > minimal_height_resolution as f32 {
-                    res
-                } else {
-                    minimal_height_resolution as f32
-                };
-
-                // write resources
-                *ecs.table.read_resource::<Uniform>().unwrap() = uniform_data;
+                ecs.table.read_resource::<Uniform>().unwrap().utime = uniform_data.utime;
 
                 // ecs ticking
                 ecs.tick();
 
+                // read updated uniform data
+                let uni = ecs.table.read_resource::<Uniform>().unwrap();
+                // update height resolution
+                uniform_data.height_resolution =
+                    if uni.height_resolution > minimal_height_resolution as f32 {
+                        uni.height_resolution
+                    } else {
+                        minimal_height_resolution as f32
+                    };
+
+                // update global_offset
+                uniform_data.global_offset_x = uni.global_offset_x;
+                uniform_data.global_offset_y = uni.global_offset_y;
+
                 // load, sort sprites
+                // todo, change to new double sized buffer if it's reaching limit
                 let sprites = ecs.table.query_raw::<Sprite>().unwrap();
                 sorted_sprites[0..sprites.len()].clone_from_slice(sprites);
                 sorted_sprites[0..sprites.len()].sort_by(|x, y| {
@@ -521,7 +533,6 @@ pub fn run(
                     uniform_data.window_width = new_size.width as f32;
                     uniform_data.window_height = new_size.height as f32;
                     window.request_redraw();
-                    ecs.tick();
                 }
                 winit::event::WindowEvent::CloseRequested => control_flow.set_exit(),
                 winit::event::WindowEvent::KeyboardInput { input, .. } => {
@@ -535,7 +546,6 @@ pub fn run(
                     {
                         ecs.table.fire_event(input.clone());
                     }
-                    ecs.tick();
                 }
 
                 winit::event::WindowEvent::MouseInput { state, button, .. } => {
@@ -543,7 +553,6 @@ pub fn run(
                     if ecs.table.read_event::<MouseKeyEvent>().unwrap().last() != Some(&event) {
                         ecs.table.fire_event(event);
                     }
-                    ecs.tick();
                 }
 
                 winit::event::WindowEvent::MouseWheel { delta, phase, .. } => match delta {
@@ -553,7 +562,6 @@ pub fn run(
                         {
                             ecs.table.fire_event(event);
                         }
-                        ecs.tick();
                     }
                     winit::event::MouseScrollDelta::PixelDelta(_) => {}
                 },
@@ -562,7 +570,6 @@ pub fn run(
                     *ecs.table
                         .read_resource::<winit::event::ModifiersState>()
                         .unwrap() = mod_state;
-                    ecs.tick();
                 }
 
                 winit::event::WindowEvent::CursorMoved { position, .. } => {
@@ -572,11 +579,9 @@ pub fn run(
 
                 winit::event::WindowEvent::CursorEntered { .. } => {
                     ecs.table.fire_event(MouseCursorEvent::Enter);
-                    ecs.tick();
                 }
                 winit::event::WindowEvent::CursorLeft { .. } => {
                     ecs.table.fire_event(MouseCursorEvent::Left);
-                    ecs.tick();
                 }
                 _ => (),
             },
