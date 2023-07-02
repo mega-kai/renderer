@@ -15,6 +15,8 @@ pub use winit;
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 // todo, find an appropriate data structure to resolve this from basic info
 // todo, animation
+// todo, mouse pos in shader
+// todo, collision
 /// specify the depth as 0.5 to enable y sorting
 pub struct Sprite {
     pub pos_x: f32,
@@ -80,6 +82,12 @@ pub enum RunningState {
     Closed,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct MouseState {
+    pub x: f32,
+    pub y: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MouseKeyEvent {
     pub key: winit::event::MouseButton,
@@ -99,7 +107,7 @@ pub enum MouseCursorEvent {
 }
 
 pub fn run(
-    minimal_height_resolution: u32,
+    minimal_height_resolution: f32,
     max_sprites: u32,
     entry_point: fn(&mut ecs::Table),
     prep_func: fn(&mut ecs::Table),
@@ -192,7 +200,7 @@ pub fn run(
 
     // uniform data
     let mut uniform_data = Uniform {
-        height_resolution: minimal_height_resolution as f32,
+        height_resolution: minimal_height_resolution,
         texture_width: texture_data.width() as f32,
         texture_height: texture_data.height() as f32,
         window_width: 0.0,
@@ -405,12 +413,12 @@ pub fn run(
     // all the sprites, which is sortet then submitted to the storage buffer
     let mut sorted_sprites = vec![Sprite::new_empty(); max_sprites as usize];
 
-    // ecs and the important resources
+    // ecs and the important states
     let mut ecs = ecs::ECS::new(entry_point);
-    ecs.table.add_resource(uniform_data).unwrap();
-    ecs.table.add_resource(RunningState::Running).unwrap();
+    ecs.table.add_state(uniform_data).unwrap();
+    ecs.table.add_state(RunningState::Running).unwrap();
     ecs.table
-        .add_resource(winit::event::ModifiersState::empty())
+        .add_state(winit::event::ModifiersState::empty())
         .unwrap();
     ecs.table.register_event::<winit::event::KeyboardInput>();
     ecs.table.register_event::<MouseKeyEvent>();
@@ -422,7 +430,7 @@ pub fn run(
     (prep_func)(&mut ecs.table);
 
     event_loop.run(move |event, _, control_flow| {
-        match ecs.table.read_resource::<RunningState>().unwrap() {
+        match ecs.table.read_state::<RunningState>().unwrap() {
             RunningState::Running => control_flow.set_poll(),
             RunningState::Closed => control_flow.set_exit(),
         }
@@ -431,21 +439,15 @@ pub fn run(
             winit::event::Event::RedrawRequested(_) => {
                 // update utime
                 uniform_data.utime = start_time.elapsed().as_secs_f32();
-                ecs.table.read_resource::<Uniform>().unwrap().utime = uniform_data.utime;
+                ecs.table.read_state::<Uniform>().unwrap().utime = uniform_data.utime;
 
                 // ecs ticking
                 ecs.tick();
 
                 // read updated uniform data
-                let uni = ecs.table.read_resource::<Uniform>().unwrap();
+                let uni = ecs.table.read_state::<Uniform>().unwrap();
                 // update height resolution
-                uniform_data.height_resolution =
-                    if uni.height_resolution > minimal_height_resolution as f32 {
-                        uni.height_resolution
-                    } else {
-                        minimal_height_resolution as f32
-                    };
-
+                uniform_data.height_resolution = uni.height_resolution;
                 // update global_offset
                 uniform_data.global_offset_x = uni.global_offset_x;
                 uniform_data.global_offset_y = uni.global_offset_y;
@@ -536,6 +538,7 @@ pub fn run(
                 }
                 winit::event::WindowEvent::CloseRequested => control_flow.set_exit(),
                 winit::event::WindowEvent::KeyboardInput { input, .. } => {
+                    // todo handle multiple key board inputs
                     // send the events (only once no repeat) to the event column in the ecs
                     if ecs
                         .table
@@ -568,7 +571,7 @@ pub fn run(
 
                 winit::event::WindowEvent::ModifiersChanged(mod_state) => {
                     *ecs.table
-                        .read_resource::<winit::event::ModifiersState>()
+                        .read_state::<winit::event::ModifiersState>()
                         .unwrap() = mod_state;
                 }
 
