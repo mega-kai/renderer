@@ -5,8 +5,6 @@ struct Uniform {
     window_width: f32,
     window_height: f32,
     utime: f32,
-    mouse_x: f32,
-    mouse_y: f32,
     global_offset_x: f32,
     global_offset_y: f32,
 }

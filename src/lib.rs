@@ -15,7 +15,6 @@ pub use winit;
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 // todo, find an appropriate data structure to resolve this from basic info
 // todo, animation
-// todo, mouse pos in shader
 // todo, collision
 /// specify the depth as 0.5 to enable y sorting
 pub struct Sprite {
@@ -63,16 +62,19 @@ impl Sprite {
 #[repr(C)]
 #[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct Uniform {
+    /// write
     pub height_resolution: f32,
     texture_width: f32,
     texture_height: f32,
-    window_width: f32,
-    window_height: f32,
+    /// read
+    pub window_width: f32,
+    /// read
+    pub window_height: f32,
+    /// read
     pub utime: f32,
-    pub mouse_x: f32,
-    pub mouse_y: f32,
-    // todo move cam functionality, in pixel
+    /// write
     pub global_offset_x: f32,
+    /// write
     pub global_offset_y: f32,
 }
 
@@ -82,32 +84,190 @@ pub enum RunningState {
     Closed,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, Debug)]
+/// read on state
 pub struct MouseState {
-    pub x: f32,
-    pub y: f32,
+    x: f32,
+    y: f32,
+
+    left: bool,
+    left_clicked: bool,
+    left_released: bool,
+
+    middle: bool,
+    middle_clicked: bool,
+    middle_released: bool,
+
+    right: bool,
+    right_clicked: bool,
+    right_released: bool,
+
+    wheel_delta: f32,
+
+    in_screen: bool,
+    just_left: bool,
+    just_entered: bool,
+}
+impl MouseState {
+    /// reset after each tick
+    fn reset(&mut self) {
+        self.wheel_delta = 0.0;
+
+        self.left_clicked = false;
+        self.middle_clicked = false;
+        self.right_clicked = false;
+
+        self.left_released = false;
+        self.middle_released = false;
+        self.right_released = false;
+
+        self.just_entered = false;
+        self.just_left = false;
+    }
+
+    pub fn x(&self) -> f32 {
+        self.x
+    }
+    pub fn y(&self) -> f32 {
+        self.y
+    }
+
+    pub fn left_button_clicked(&self) -> bool {
+        self.left_clicked
+    }
+    pub fn left_button_pressed(&self) -> bool {
+        self.left
+    }
+    pub fn left_button_released(&self) -> bool {
+        self.left_released
+    }
+
+    pub fn right_button_clicked(&self) -> bool {
+        self.right_clicked
+    }
+    pub fn right_button_pressed(&self) -> bool {
+        self.right
+    }
+    pub fn right_button_released(&self) -> bool {
+        self.right_released
+    }
+
+    pub fn middle_button_clicked(&self) -> bool {
+        self.middle_clicked
+    }
+    pub fn middle_button_pressed(&self) -> bool {
+        self.middle
+    }
+    pub fn middle_button_released(&self) -> bool {
+        self.middle_released
+    }
+
+    // wheel stuff
+    pub fn wheel_delta(&self) -> f32 {
+        self.wheel_delta
+    }
+
+    // cursor stuff
+    pub fn in_screen(&self) -> bool {
+        self.in_screen
+    }
+    pub fn just_left(&self) -> bool {
+        self.just_left
+    }
+    pub fn just_entered(&self) -> bool {
+        self.just_entered
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct MouseKeyEvent {
-    pub key: winit::event::MouseButton,
-    pub state: winit::event::ElementState,
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum KeyEvent {
+    Pressed(winit::event::VirtualKeyCode),
+    Released(winit::event::VirtualKeyCode),
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct MouseWheelEvent {
-    pub x: f32,
-    pub y: f32,
+pub struct KeyState {
+    pressed: [Option<winit::event::VirtualKeyCode>; 32],
+    events: [Option<KeyEvent>; 32],
 }
+impl KeyState {
+    fn new() -> Self {
+        KeyState {
+            pressed: [None; 32],
+            events: [None; 32],
+        }
+    }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MouseCursorEvent {
-    Enter,
-    Left,
+    /// reset after each tick
+    fn reset(&mut self) {
+        self.pressed.sort_unstable_by(|x, y| y.cmp(x));
+        self.events = [None; 32];
+    }
+
+    fn press(&mut self, code: winit::event::VirtualKeyCode) {
+        if !self.pressed.contains(&Some(code)) {
+            for (index, each) in self.pressed.iter_mut().enumerate() {
+                if each == &None {
+                    *each = Some(code);
+                    // register event here
+                    for each in 0..self.events.len() {
+                        if self.events[each] == None {
+                            self.events[each] = Some(KeyEvent::Pressed(code));
+                        }
+                        break;
+                    }
+                    //
+                    break;
+                }
+            }
+        }
+    }
+
+    fn release(&mut self, code: winit::event::VirtualKeyCode) {
+        let mut index_to_remove = None::<usize>;
+        for (index, each) in self.pressed.iter().enumerate() {
+            if each == &Some(code) {
+                index_to_remove = Some(index);
+                // register event here
+                for each in 0..self.events.len() {
+                    if self.events[each] == None {
+                        self.events[each] = Some(KeyEvent::Released(code));
+                        break;
+                    }
+                }
+                //
+                break;
+            }
+        }
+        if index_to_remove.is_some() {
+            self.pressed[index_to_remove.unwrap()] = None;
+        }
+    }
+
+    pub fn is_pressed(&self, code: winit::event::VirtualKeyCode) -> bool {
+        self.pressed.contains(&Some(code))
+    }
+
+    pub fn just_clicked(&self, key: winit::event::VirtualKeyCode) -> bool {
+        for each in 0..self.events.len() {
+            if self.events[each] == Some(KeyEvent::Pressed(key)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn just_released(&self, key: winit::event::VirtualKeyCode) -> bool {
+        for each in 0..self.events.len() {
+            if self.events[each] == Some(KeyEvent::Released(key)) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 pub fn run(
-    minimal_height_resolution: f32,
+    minimal_half_height_resolution: f32,
     max_sprites: u32,
     entry_point: fn(&mut ecs::Table),
     prep_func: fn(&mut ecs::Table),
@@ -200,14 +360,12 @@ pub fn run(
 
     // uniform data
     let mut uniform_data = Uniform {
-        height_resolution: minimal_height_resolution,
+        height_resolution: minimal_half_height_resolution,
         texture_width: texture_data.width() as f32,
         texture_height: texture_data.height() as f32,
         window_width: 0.0,
         window_height: 0.0,
         utime: 0.0,
-        mouse_x: 0.0,
-        mouse_y: 0.0,
         global_offset_x: 0.0,
         global_offset_y: 0.0,
     };
@@ -418,12 +576,35 @@ pub fn run(
     ecs.table.add_state(uniform_data).unwrap();
     ecs.table.add_state(RunningState::Running).unwrap();
     ecs.table
+        .add_state(MouseState {
+            x: 0.0,
+            y: 0.0,
+
+            left: false,
+            left_clicked: false,
+            left_released: false,
+
+            middle: false,
+            middle_clicked: false,
+            middle_released: false,
+
+            right: false,
+            right_clicked: false,
+            right_released: false,
+
+            wheel_delta: 0.0,
+            in_screen: true,
+            just_entered: false,
+            just_left: false,
+        })
+        .unwrap();
+    ecs.table
         .add_state(winit::event::ModifiersState::empty())
         .unwrap();
-    ecs.table.register_event::<winit::event::KeyboardInput>();
-    ecs.table.register_event::<MouseKeyEvent>();
-    ecs.table.register_event::<MouseWheelEvent>();
-    ecs.table.register_event::<MouseCursorEvent>();
+    ecs.table.add_state(KeyState::new()).unwrap();
+    ecs.table
+        .add_state::<Vec<winit::event::VirtualKeyCode>>(Vec::with_capacity(128))
+        .unwrap();
     ecs.table.register_column::<Sprite>();
 
     // custom prep work done to ecs
@@ -437,24 +618,29 @@ pub fn run(
         match event {
             winit::event::Event::MainEventsCleared => window.request_redraw(),
             winit::event::Event::RedrawRequested(_) => {
-                // update utime
+                // local uniform -> table uniform
                 uniform_data.utime = start_time.elapsed().as_secs_f32();
-                ecs.table.read_state::<Uniform>().unwrap().utime = uniform_data.utime;
+                let uni = ecs.table.read_state::<Uniform>().unwrap();
+                uni.utime = uniform_data.utime;
+                uni.window_width = uniform_data.window_width;
+                uni.window_height = uniform_data.window_height;
 
                 // ecs ticking
                 ecs.tick();
 
-                // read updated uniform data
+                // reset some states after ticking
+                ecs.table.read_state::<KeyState>().unwrap().reset();
+                ecs.table.read_state::<MouseState>().unwrap().reset();
+
+                // table uniform -> local uniform
                 let uni = ecs.table.read_state::<Uniform>().unwrap();
-                // update height resolution
                 uniform_data.height_resolution = uni.height_resolution;
-                // update global_offset
                 uniform_data.global_offset_x = uni.global_offset_x;
                 uniform_data.global_offset_y = uni.global_offset_y;
 
                 // load, sort sprites
                 // todo, change to new double sized buffer if it's reaching limit
-                let sprites = ecs.table.query_raw::<Sprite>().unwrap();
+                let sprites = ecs.table.read_column::<Sprite>().unwrap();
                 sorted_sprites[0..sprites.len()].clone_from_slice(sprites);
                 sorted_sprites[0..sprites.len()].sort_by(|x, y| {
                     if x.depth == 0.5 && y.depth == 0.5 {
@@ -464,7 +650,7 @@ pub fn run(
                     }
                 });
 
-                // write buffers
+                // write buffers; local uniform -> shader uniform
                 queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
                 queue.write_buffer(
                     &sprite_storage_buffer,
@@ -537,37 +723,30 @@ pub fn run(
                     window.request_redraw();
                 }
                 winit::event::WindowEvent::CloseRequested => control_flow.set_exit(),
-                winit::event::WindowEvent::KeyboardInput { input, .. } => {
-                    // todo handle multiple key board inputs
-                    // send the events (only once no repeat) to the event column in the ecs
-                    if ecs
-                        .table
-                        .read_event::<winit::event::KeyboardInput>()
-                        .unwrap()
-                        .last()
-                        != Some(&input)
-                    {
-                        ecs.table.fire_event(input.clone());
-                    }
-                }
 
-                winit::event::WindowEvent::MouseInput { state, button, .. } => {
-                    let event = MouseKeyEvent { key: button, state };
-                    if ecs.table.read_event::<MouseKeyEvent>().unwrap().last() != Some(&event) {
-                        ecs.table.fire_event(event);
+                winit::event::WindowEvent::KeyboardInput { input, .. } => {
+                    let key_state = ecs.table.read_state::<KeyState>().unwrap();
+                    if let Some(code) = input.virtual_keycode {
+                        match input.state {
+                            winit::event::ElementState::Pressed => key_state.press(code),
+                            winit::event::ElementState::Released => key_state.release(code),
+                        }
                     }
                 }
 
                 winit::event::WindowEvent::MouseWheel { delta, phase, .. } => match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                        let event = MouseWheelEvent { x, y };
-                        if ecs.table.read_event::<MouseWheelEvent>().unwrap().last() != Some(&event)
-                        {
-                            ecs.table.fire_event(event);
-                        }
+                        ecs.table.read_state::<MouseState>().unwrap().wheel_delta = y;
                     }
                     winit::event::MouseScrollDelta::PixelDelta(_) => {}
                 },
+
+                winit::event::WindowEvent::CursorEntered { .. } => {
+                    ecs.table.read_state::<MouseState>().unwrap().just_entered = true;
+                }
+                winit::event::WindowEvent::CursorLeft { .. } => {
+                    ecs.table.read_state::<MouseState>().unwrap().just_left = true;
+                }
 
                 winit::event::WindowEvent::ModifiersChanged(mod_state) => {
                     *ecs.table
@@ -576,16 +755,54 @@ pub fn run(
                 }
 
                 winit::event::WindowEvent::CursorMoved { position, .. } => {
-                    uniform_data.mouse_x = position.x as f32;
-                    uniform_data.mouse_y = position.y as f32;
+                    ecs.table.read_state::<MouseState>().unwrap().x = position.x as f32;
+                    ecs.table.read_state::<MouseState>().unwrap().y = position.y as f32;
                 }
-
-                winit::event::WindowEvent::CursorEntered { .. } => {
-                    ecs.table.fire_event(MouseCursorEvent::Enter);
-                }
-                winit::event::WindowEvent::CursorLeft { .. } => {
-                    ecs.table.fire_event(MouseCursorEvent::Left);
-                }
+                winit::event::WindowEvent::MouseInput { state, button, .. } => match button {
+                    winit::event::MouseButton::Left => match state {
+                        winit::event::ElementState::Pressed => {
+                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                            mouse_state.left = true;
+                            mouse_state.left_clicked = true;
+                            mouse_state.left_released = false;
+                        }
+                        winit::event::ElementState::Released => {
+                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                            mouse_state.left = false;
+                            mouse_state.left_released = true;
+                            mouse_state.left_clicked = false;
+                        }
+                    },
+                    winit::event::MouseButton::Middle => match state {
+                        winit::event::ElementState::Pressed => {
+                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                            mouse_state.middle = true;
+                            mouse_state.middle_clicked = true;
+                            mouse_state.middle_released = false;
+                        }
+                        winit::event::ElementState::Released => {
+                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                            mouse_state.middle = false;
+                            mouse_state.middle_released = true;
+                            mouse_state.middle_clicked = false;
+                        }
+                    },
+                    winit::event::MouseButton::Right => match state {
+                        winit::event::ElementState::Pressed => {
+                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                            mouse_state.right = true;
+                            mouse_state.right_clicked = true;
+                            mouse_state.right_released = false;
+                        }
+                        winit::event::ElementState::Released => {
+                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                            mouse_state.right = false;
+                            mouse_state.right_released = true;
+                            mouse_state.right_clicked = false;
+                        }
+                    },
+                    _ => {}
+                },
                 _ => (),
             },
             _ => (),

@@ -11,4 +11,4 @@ winit = { version = "0.28.6" }
 pollster = { version = "0.3.0" }
 bytemuck = { version = "1.13.1", features = ["derive"] }
 image = { version = "0.24.6" }
-ecs = { git = "https://github.com/mega-kai/ECS.git" }
+ecs = { path = "../ECS" }
