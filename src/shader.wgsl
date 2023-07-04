@@ -26,14 +26,24 @@ struct Sprite {
     origin: f32,
 
     frames: u32,
-    /// if positive it loops all the time, if negative it only plays once
     duration: f32,
+    paused: u32,
+    reversed: u32,
     looping: u32,
+
+    transparency: f32,
+
+    anim_buffer_index: u32,
+
+    flipped_x: u32,
+    flipped_y: u32,
 }
 
 struct Animation {
     counter: f32,
     current_frame: u32,
+    loop_paused: u32,
+    started: u32,
 }
 
 
@@ -44,7 +54,13 @@ struct VertexOutput {
     @location(2) tex_height: i32,
     @location(3) tex_x: i32,
     @location(4) tex_y: i32,
-    @location(5) animated_x: u32,
+    @location(5) frame_offset_x: u32,
+    @location(6) transparency: f32,
+
+    @location(7) flipped_x: u32,
+    @location(8) flipped_y: u32,
+    // @location(9) thing: Sprite,
+
 }
 
 
@@ -86,27 +102,27 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     switch vertex_in_sprite_index {
         case 0u: {
             out.position = vec4<f32>(ratio * pos_x, pos_y, depth, 1.0);
-            out.tex_coords = vec2<f32>(current_sprite.tex_x, current_sprite.tex_y);
+            out.tex_coords = vec2<f32>(0.0, 0.0);
         }
         case 1u: {
             out.position = vec4<f32>(ratio * pos_x, pos_y - height, depth, 1.0);
-            out.tex_coords = vec2<f32>(current_sprite.tex_x, current_sprite.tex_y + current_sprite.height);
+            out.tex_coords = vec2<f32>(0.0, current_sprite.height);
         }
         case 2u: {
             out.position = vec4<f32>(ratio * (pos_x + width), pos_y, depth, 1.0);
-            out.tex_coords = vec2<f32>(current_sprite.tex_x + current_sprite.width, current_sprite.tex_y);
+            out.tex_coords = vec2<f32>(current_sprite.width, 0.0);
         }
         case 3u: {
             out.position = vec4<f32>(ratio * pos_x, pos_y - height, depth, 1.0);
-            out.tex_coords = vec2<f32>(current_sprite.tex_x, current_sprite.tex_y + current_sprite.height);
+            out.tex_coords = vec2<f32>(0.0, current_sprite.height);
         }
         case 4u: {
             out.position = vec4<f32>(ratio * (pos_x + width), pos_y - height, depth, 1.0);
-            out.tex_coords = vec2<f32>(current_sprite.tex_x + current_sprite.width, current_sprite.tex_y + current_sprite.height);
+            out.tex_coords = vec2<f32>(current_sprite.width, current_sprite.height);
         }
         case 5u: {
             out.position = vec4<f32>(ratio * (pos_x + width), pos_y, depth, 1.0);
-            out.tex_coords = vec2<f32>(current_sprite.tex_x + current_sprite.width, current_sprite.tex_y);
+            out.tex_coords = vec2<f32>(current_sprite.width, 0.0);
         }
         default: {
             out.position = vec4<f32>();
@@ -114,35 +130,78 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         }
     }
 
-    var animated_x = 0u;
-    if current_sprite.frames > 1u {
-        if anim_storage_array[sprite_index].counter >= current_sprite.duration {
-            if anim_storage_array[sprite_index].current_frame < current_sprite.frames - 1u {
-                anim_storage_array[sprite_index].current_frame = anim_storage_array[sprite_index].current_frame + 1u;
-            } else {
-                anim_storage_array[sprite_index].current_frame = 0u;
-            }
-            anim_storage_array[sprite_index].counter = 0.0;
-        } else {
-            anim_storage_array[sprite_index].counter += uniform_data.delta_time;
-        }
-        animated_x = anim_storage_array[sprite_index].current_frame * u32(current_sprite.tex_width);
+    var frame_offset_x = 0u;
+    if current_sprite.reversed != 0u && anim_storage_array[current_sprite.anim_buffer_index].started == 0u {
+        anim_storage_array[current_sprite.anim_buffer_index].current_frame = (current_sprite.frames - 1u);
     }
+    if current_sprite.frames > 1u && current_sprite.paused == 0u && (current_sprite.looping != 0u || anim_storage_array[current_sprite.anim_buffer_index].loop_paused == 0u) {
+        anim_storage_array[current_sprite.anim_buffer_index].started = 1u;
+        let duration = max(current_sprite.duration, 0.0);
+        if anim_storage_array[current_sprite.anim_buffer_index].counter >= duration {
+            if current_sprite.reversed == 0u {
+                if anim_storage_array[current_sprite.anim_buffer_index].current_frame + 1u < current_sprite.frames {
+                    if anim_storage_array[current_sprite.anim_buffer_index].current_frame + 1u == current_sprite.frames - 1u {
+                        anim_storage_array[current_sprite.anim_buffer_index].loop_paused = 1u;
+                    }
+                    anim_storage_array[current_sprite.anim_buffer_index].current_frame += 1u;
+                } else {
+                    anim_storage_array[current_sprite.anim_buffer_index].current_frame = 0u;
+                    anim_storage_array[current_sprite.anim_buffer_index].loop_paused = 0u;
+                }
+            } else {
+                if anim_storage_array[current_sprite.anim_buffer_index].current_frame > 0u {
+                    if anim_storage_array[current_sprite.anim_buffer_index].current_frame == 1u {
+                        anim_storage_array[current_sprite.anim_buffer_index].loop_paused = 1u;
+                    }
+                    anim_storage_array[current_sprite.anim_buffer_index].current_frame -= 1u;
+                } else {
+                    anim_storage_array[current_sprite.anim_buffer_index].current_frame = current_sprite.frames - 1u;
+                    anim_storage_array[current_sprite.anim_buffer_index].loop_paused = 0u;
+                }
+            }
+            anim_storage_array[current_sprite.anim_buffer_index].counter = 0.0;
+        } else {
+            anim_storage_array[current_sprite.anim_buffer_index].counter += uniform_data.delta_time;
+        }
+    }
+    frame_offset_x = anim_storage_array[current_sprite.anim_buffer_index].current_frame * u32(current_sprite.tex_width);
 
     out.tex_width = i32(current_sprite.tex_width);
     out.tex_height = i32(current_sprite.tex_height);
     out.tex_x = i32(current_sprite.tex_x);
     out.tex_y = i32(current_sprite.tex_y);
-    out.animated_x = animated_x;
+    out.frame_offset_x = frame_offset_x;
+    out.transparency = clamp(current_sprite.transparency, 0.0, 1.0);
+    out.flipped_x = current_sprite.flipped_x;
+    out.flipped_y = current_sprite.flipped_y;
+
     return out;
 }
 
     @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var result: vec4<f32>;
-    // result = textureLoad(texture, vec2<i32>(i32(in.tex_coords.x) + i32(in.animated_x), i32(in.tex_coords.y)), 0);
-    result = textureLoad(texture, vec2<i32>(i32(in.tex_coords.x) % in.tex_width + in.tex_x + i32(in.animated_x), i32(in.tex_coords.y) % in.tex_height + in.tex_y), 0);
-    
+    // result = textureLoad(texture, vec2<i32>(i32(in.tex_coords.x) + i32(in.frame_offset_x), i32(in.tex_coords.y)), 0);
+
+    var repeated_unit_x = i32(in.tex_coords.x) % in.tex_width;
+    var repeated_unit_y = i32(in.tex_coords.y) % in.tex_height;
+    var base_x = in.tex_x;
+    var base_y = in.tex_y;
+    var frame_x = i32(in.frame_offset_x);
+    var frame_y = 0;
+
+    if in.flipped_x != 0u {
+        repeated_unit_x = in.tex_width - 1 - repeated_unit_x;
+    }
+
+    if in.flipped_y != 0u {
+        repeated_unit_y = in.tex_height - 1 - repeated_unit_y;
+    }
+
+    result = textureLoad(texture, vec2<i32>(base_x + frame_x + repeated_unit_x, base_y + frame_y + repeated_unit_y), 0);
+
+    // set transparency
+    result.w *= in.transparency;
     // result.x = abs(sin(uniform_data.utime));
     return result;
 }

@@ -8,35 +8,329 @@
 )]
 #![feature(path_file_prefix, alloc_layout_extra)]
 
+use std::{mem::MaybeUninit, slice::from_raw_parts};
+
 pub use ecs;
 pub use winit;
 
 #[repr(C)]
-#[derive(Debug, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
-// todo, find an appropriate data structure to resolve this from basic info
-// todo, animation
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Animation {
+    counter: f32,
+    current_frame: u32,
+    loop_paused: u32,
+    started: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct TextureDescription {
+    tex_x: u32,
+    tex_y: u32,
+    tex_width: u32,
+    tex_height: u32,
+    frames: u32,
+    origin: u32,
+    looping: u32,
+    frames_per_sec: u32,
+}
+
+pub struct SpriteMaster3000<'this> {
+    map: std::collections::HashMap<String, TextureDescription>,
+    pub occupied_indices: Vec<bool>,
+    table: &'this mut ecs::Table,
+    queue: &'this wgpu::Queue,
+    buffer: &'this wgpu::Buffer,
+}
+impl<'this> SpriteMaster3000<'this> {
+    fn new(
+        mut current_dir: std::path::PathBuf,
+        sprite_num: u32,
+        table: *mut ecs::Table,
+        queue: *const wgpu::Queue,
+        buffer: *const wgpu::Buffer,
+    ) -> Self {
+        current_dir.push("res/texture.json");
+        let val = std::fs::read(current_dir).expect("cannot open file from this directory, either file not exist or don't have the permission");
+        let map: std::collections::HashMap<String, TextureDescription> =
+            serde_json::from_slice(&val).expect("corrupt file format");
+
+        Self {
+            map,
+            occupied_indices: vec![false; sprite_num as usize],
+            table: unsafe { table.as_mut().unwrap() },
+            queue: unsafe { queue.as_ref().unwrap() },
+            buffer: unsafe { buffer.as_ref().unwrap() },
+        }
+    }
+
+    pub fn print(&self) {
+        println!("{:?}", self.map);
+    }
+
+    pub fn insert_sprite<'a, 'b>(
+        &'a mut self,
+        sparse_index: usize,
+        texture: &str,
+        pos: (f32, f32),
+        depth: f32,
+    ) -> Result<&'b mut Sprite, &'static str> {
+        let mut buffer_index = None::<u32>;
+        for each in 0..self.occupied_indices.len() {
+            if self.occupied_indices[each] == false {
+                self.occupied_indices[each] = true;
+                buffer_index = Some(each as u32);
+                break;
+            }
+        }
+        if buffer_index.is_some() {
+            let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
+            let mut sprite = Sprite::new_empty();
+            sprite.anim_buffer_index = buffer_index.unwrap();
+            sprite.tex_x = tex_data.tex_x as f32;
+            sprite.tex_y = tex_data.tex_y as f32;
+            sprite.tex_width = tex_data.tex_width as f32;
+            sprite.tex_height = tex_data.tex_height as f32;
+            sprite.width = tex_data.tex_width as f32;
+            sprite.height = tex_data.tex_height as f32;
+            sprite.frames = tex_data.frames;
+
+            sprite.depth = depth;
+            sprite.pos_x = pos.0;
+            sprite.pos_y = pos.1;
+
+            sprite.looping = tex_data.looping;
+            sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
+            Ok(self.table.insert_at(sparse_index, sprite)?)
+        } else {
+            panic!("failed to find avaible buffer index")
+        }
+    }
+
+    pub fn clone_insert<'a, 'b>(
+        &'a mut self,
+        index_to_clone: usize,
+        index_to_insert: usize,
+    ) -> Result<&'b mut Sprite, &'static str> {
+        let mut buffer_index = None::<u32>;
+        for each in 0..self.occupied_indices.len() {
+            if self.occupied_indices[each] == false {
+                self.occupied_indices[each] = true;
+                buffer_index = Some(each as u32);
+                break;
+            }
+        }
+        if buffer_index.is_some() {
+            unsafe {
+                let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
+                std::ptr::copy(
+                    self.table
+                        .read_single::<Sprite>(index_to_clone)
+                        .ok_or("index not valid")?,
+                    uninit_sprite.as_mut_ptr(),
+                    1,
+                );
+                let mut sprite = uninit_sprite.assume_init();
+
+                sprite.anim_buffer_index = buffer_index.unwrap();
+
+                Ok(self.table.insert_at(index_to_insert, sprite)?)
+            }
+        } else {
+            panic!("failed to find avaible buffer index")
+        }
+    }
+
+    pub fn add_sprite<'a, 'b>(
+        &'a mut self,
+        texture: &str,
+        pos: (f32, f32),
+        depth: f32,
+    ) -> Result<(usize, &'b mut Sprite), &'static str> {
+        let mut buffer_index = None::<u32>;
+        for each in 0..self.occupied_indices.len() {
+            if self.occupied_indices[each] == false {
+                self.occupied_indices[each] = true;
+                buffer_index = Some(each as u32);
+                break;
+            }
+        }
+        if buffer_index.is_some() {
+            let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
+            let mut sprite = Sprite::new_empty();
+            sprite.anim_buffer_index = buffer_index.unwrap();
+            sprite.tex_x = tex_data.tex_x as f32;
+            sprite.tex_y = tex_data.tex_y as f32;
+            sprite.tex_width = tex_data.tex_width as f32;
+            sprite.tex_height = tex_data.tex_height as f32;
+            sprite.width = tex_data.tex_width as f32;
+            sprite.height = tex_data.tex_height as f32;
+            sprite.frames = tex_data.frames;
+            sprite.looping = tex_data.looping;
+            sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
+
+            sprite.depth = depth;
+            sprite.pos_x = pos.0;
+            sprite.pos_y = pos.1;
+
+            Ok(self.table.insert_new(sprite))
+        } else {
+            panic!("failed to find avaible buffer index")
+        }
+    }
+
+    pub fn clone_add<'a, 'b>(
+        &'a mut self,
+        index_to_clone: usize,
+    ) -> Result<(usize, &'b mut Sprite), &'static str> {
+        unsafe {
+            let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
+            std::ptr::copy(
+                self.table
+                    .read_single::<Sprite>(index_to_clone)
+                    .ok_or("index not valid")?,
+                uninit_sprite.as_mut_ptr(),
+                1,
+            );
+            let mut sprite = uninit_sprite.assume_init();
+
+            let mut buffer_index = None::<u32>;
+            for each in 0..self.occupied_indices.len() {
+                if self.occupied_indices[each] == false {
+                    self.occupied_indices[each] = true;
+                    buffer_index = Some(each as u32);
+                    break;
+                }
+            }
+            if buffer_index.is_some() {
+                sprite.anim_buffer_index = buffer_index.unwrap();
+            } else {
+                panic!("failed to find avaible buffer index")
+            }
+            Ok(self.table.insert_new(sprite))
+        }
+    }
+
+    pub fn remove_sprite(&mut self, sparse_index: usize) -> Result<(), &'static str> {
+        let sprite = self.table.remove::<Sprite>(sparse_index)?;
+        if self.occupied_indices[sprite.anim_buffer_index as usize] == true {
+            self.queue.write_buffer(
+                self.buffer,
+                sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
+                bytemuck::cast_slice(&[Animation {
+                    counter: 0.0,
+                    current_frame: 0,
+                    loop_paused: 0,
+                    started: 0,
+                }]),
+            );
+            self.occupied_indices[sprite.anim_buffer_index as usize] = false;
+        } else {
+            panic!("index not matching");
+        }
+        Ok(())
+    }
+
+    /// true for cut, false for queue
+    // todo, cut or queue
+    pub fn change_state(
+        &mut self,
+        sparse_index: usize,
+        texture: &str,
+        cut_or_queue: bool,
+    ) -> Result<(), &'static str> {
+        let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
+        let sprite = self
+            .table
+            .read_single::<Sprite>(sparse_index)
+            .ok_or("invalid index")?;
+
+        if tex_data.tex_x as f32 == sprite.tex_x
+            && tex_data.tex_y as f32 == sprite.tex_y
+            && tex_data.frames == sprite.frames
+            && tex_data.tex_height as f32 == sprite.tex_height
+            && tex_data.tex_width as f32 == sprite.tex_width
+        {
+            return Ok(());
+        }
+
+        let mut buffer_index = None::<u32>;
+        for each in 0..self.occupied_indices.len() {
+            if self.occupied_indices[each] == false {
+                self.occupied_indices[each] = true;
+                buffer_index = Some(each as u32);
+                break;
+            }
+        }
+
+        if buffer_index.is_some() {
+            sprite.tex_x = tex_data.tex_x as f32;
+            sprite.tex_y = tex_data.tex_y as f32;
+            sprite.tex_width = tex_data.tex_width as f32;
+            sprite.tex_height = tex_data.tex_height as f32;
+            sprite.width = tex_data.tex_width as f32;
+            sprite.height = tex_data.tex_height as f32;
+            sprite.frames = tex_data.frames;
+            sprite.looping = tex_data.looping;
+            sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
+
+            if self.occupied_indices[sprite.anim_buffer_index as usize] == true {
+                self.queue.write_buffer(
+                    self.buffer,
+                    sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
+                    bytemuck::cast_slice(&[Animation {
+                        counter: 0.0,
+                        current_frame: 0,
+                        loop_paused: 0,
+                        started: 0,
+                    }]),
+                );
+                self.occupied_indices[sprite.anim_buffer_index as usize] = false;
+            } else {
+                panic!("index not matching");
+            }
+
+            sprite.anim_buffer_index = buffer_index.unwrap();
+            Ok(())
+        } else {
+            panic!("failed to find avaible buffer index")
+        }
+    }
+}
+
 // todo, square collision
 /// specify the depth as 0.5 to enable y sorting
+#[repr(C)]
+#[derive(Debug)]
 pub struct Sprite {
     pub pos_x: f32,
     pub pos_y: f32,
 
+    /// if you don't want repeating patterns don't touch this
     pub width: f32,
     pub height: f32,
 
-    pub tex_x: f32,
-    pub tex_y: f32,
+    tex_x: f32,
+    tex_y: f32,
 
-    pub tex_width: f32,
-    pub tex_height: f32,
+    tex_width: f32,
+    tex_height: f32,
 
     pub depth: f32,
-    pub origin: f32,
+    origin: f32,
 
-    pub frames: u32,
-    /// if positive plays forward, else plays backward
+    frames: u32,
+
     pub duration: f32,
+    pub paused: u32,
+    pub reversed: u32,
     pub looping: u32,
+
+    pub transparency: f32,
+
+    anim_buffer_index: u32,
+
+    pub flipped_x: u32,
+    pub flipped_y: u32,
 }
 impl Sprite {
     fn new_empty() -> Self {
@@ -54,9 +348,18 @@ impl Sprite {
             depth: 0.0,
             origin: 0.0,
 
-            duration: 0.0,
+            duration: 1.0,
+            reversed: 0,
+            paused: 0,
             frames: 0,
             looping: 0,
+
+            transparency: 1.0,
+
+            anim_buffer_index: 0,
+
+            flipped_x: 0,
+            flipped_y: 0,
         }
     }
 }
@@ -211,7 +514,7 @@ impl KeyState {
 
     fn press(&mut self, code: winit::event::VirtualKeyCode) {
         if !self.pressed.contains(&Some(code)) {
-            for (index, each) in self.pressed.iter_mut().enumerate() {
+            for each in self.pressed.iter_mut() {
                 if each == &None {
                     *each = Some(code);
                     // register event here
@@ -277,13 +580,13 @@ pub fn run(
     max_sprites: u32,
     entry_point: fn(&mut ecs::Table),
     prep_func: fn(&mut ecs::Table),
+    post_func: fn(&mut ecs::Table),
 ) {
     // utime
     let start_time = std::time::Instant::now();
     // window and event loop stuff
     let event_loop = winit::event_loop::EventLoop::new();
     let window = winit::window::Window::new(&event_loop).unwrap();
-    let proxy = event_loop.create_proxy();
 
     // wgpu prep stuff
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
@@ -315,7 +618,8 @@ pub fn run(
     surface.configure(&device, &surface_config);
 
     // loading texture and it's meta data
-    let mut current_dir = std::env::current_dir().unwrap();
+    // todo, make this multiple pages if the atlas is too big, then make sure you can index animation on multiple rows instead of a single one
+    let current_dir = std::env::current_dir().unwrap();
     let mut texture_dir = current_dir.clone();
     texture_dir.push("res/texture.png");
     let texture_data = image::io::Reader::open(texture_dir)
@@ -359,11 +663,6 @@ pub fn run(
         },
     );
 
-    // todo
-    let mut metadata_dir = current_dir.clone();
-    metadata_dir.push("res/texture.png");
-    let texture_meta_data = ();
-
     // uniform data
     let mut uniform_data = Uniform {
         height_resolution: minimal_half_height_resolution,
@@ -387,16 +686,6 @@ pub fn run(
     });
     queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
 
-    // vertex buffer
-    let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        mapped_at_creation: false,
-        size: 6 * max_sprites as u64,
-        usage: wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::VERTEX,
-    });
-
     // storage buffer
     let sprite_storage_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -410,7 +699,7 @@ pub fn run(
         label: None,
         mapped_at_creation: false,
         // assuming that all sprites can be animated
-        size: 8 * max_sprites as u64,
+        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC
             | wgpu::BufferUsages::STORAGE,
@@ -577,12 +866,23 @@ pub fn run(
     });
 
     // all the sprites, which is sortet then submitted to the storage buffer
-    let mut sorted_sprites = vec![Sprite::new_empty(); max_sprites as usize];
+    let mut sorted_sprites: Vec<Sprite> = Vec::with_capacity(max_sprites as usize);
 
     // ecs and the important states
     let mut ecs = ecs::ECS::new(entry_point);
+
+    // texture map data
+    let sprite_master = SpriteMaster3000::new(
+        current_dir.clone(),
+        max_sprites,
+        &mut ecs.table,
+        &queue,
+        &sprite_anim_data_storage_buffer,
+    );
+
     ecs.table.add_state(uniform_data).unwrap();
     ecs.table.add_state(RunningState::Running).unwrap();
+    ecs.table.add_state(sprite_master).unwrap();
     ecs.table
         .add_state(MouseState {
             x: 0.0,
@@ -621,10 +921,15 @@ pub fn run(
     event_loop.run(move |event, _, control_flow| {
         match ecs.table.read_state::<RunningState>().unwrap() {
             RunningState::Running => control_flow.set_poll(),
-            RunningState::Closed => control_flow.set_exit(),
+            RunningState::Closed => {
+                control_flow.set_exit();
+            }
         }
         match event {
             winit::event::Event::MainEventsCleared => window.request_redraw(),
+            winit::event::Event::LoopDestroyed => {
+                (post_func)(&mut ecs.table);
+            }
             winit::event::Event::RedrawRequested(_) => {
                 // local uniform -> table uniform
                 uniform_data.utime = start_time.elapsed().as_secs_f32();
@@ -635,8 +940,6 @@ pub fn run(
                 uni.window_height = uniform_data.window_height;
                 uni.delta_time = uniform_data.delta_time;
                 uni.last_utime = uniform_data.last_utime;
-
-                // println!("{:?}", uniform_data.delta_time);
 
                 // ecs ticking
                 ecs.tick();
@@ -656,8 +959,12 @@ pub fn run(
 
                 // load, sort sprites
                 // todo, change to new double sized buffer if it's reaching limit
+                // maybe we can sort the sprites in shader?? that way it would know how to sort
                 let sprites = ecs.table.read_column::<Sprite>().unwrap();
-                sorted_sprites[0..sprites.len()].clone_from_slice(sprites);
+                unsafe {
+                    sorted_sprites.set_len(sprites.len());
+                    std::ptr::copy(sprites.as_ptr(), sorted_sprites.as_mut_ptr(), sprites.len());
+                };
                 sorted_sprites[0..sprites.len()].sort_by(|x, y| {
                     if x.depth == 0.5 && y.depth == 0.5 {
                         (y.pos_y - y.origin).total_cmp(&(x.pos_y - x.origin))
@@ -671,7 +978,12 @@ pub fn run(
                 queue.write_buffer(
                     &sprite_storage_buffer,
                     0,
-                    bytemuck::cast_slice(&sorted_sprites[0..sorted_sprites.len()]),
+                    bytemuck::cast_slice(unsafe {
+                        from_raw_parts(
+                            sorted_sprites.as_ptr() as *const u8,
+                            sprites.len() * std::mem::size_of::<Sprite>(),
+                        )
+                    }),
                 );
 
                 // render
@@ -708,7 +1020,7 @@ pub fn run(
                 });
                 render_pass.set_pipeline(&pipeline);
                 render_pass.set_bind_group(0, &bind_group, &[]);
-                render_pass.draw(0..sorted_sprites.len() as u32 * 6, 0..1);
+                render_pass.draw(0..sprites.len() as u32 * 6, 0..1);
                 drop(render_pass);
                 queue.submit(Some(encoder.finish()));
                 canvas.present();
@@ -738,7 +1050,9 @@ pub fn run(
                     uniform_data.window_height = new_size.height as f32;
                     window.request_redraw();
                 }
-                winit::event::WindowEvent::CloseRequested => control_flow.set_exit(),
+                winit::event::WindowEvent::CloseRequested => {
+                    control_flow.set_exit();
+                }
 
                 winit::event::WindowEvent::KeyboardInput { input, .. } => {
                     let key_state = ecs.table.read_state::<KeyState>().unwrap();
@@ -750,8 +1064,8 @@ pub fn run(
                     }
                 }
 
-                winit::event::WindowEvent::MouseWheel { delta, phase, .. } => match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                winit::event::WindowEvent::MouseWheel { delta, .. } => match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
                         ecs.table.read_state::<MouseState>().unwrap().wheel_delta = y;
                     }
                     winit::event::MouseScrollDelta::PixelDelta(_) => {}
