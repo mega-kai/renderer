@@ -1098,7 +1098,10 @@ pub fn run(
                     buffer_status_3 = 0;
                 }
 
-                println!("{:?},{:?},{:?}", buffer_1, buffer_2, buffer_3);
+                println!(
+                    "{:?},{:?},{:?}",
+                    buffer_status_1, buffer_status_2, buffer_status_3
+                );
 
                 // render
                 let canvas = surface.get_current_texture().unwrap();
