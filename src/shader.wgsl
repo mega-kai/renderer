@@ -45,7 +45,7 @@ struct Animation {
     loop_paused: u32,
     started: u32,
     cycles: u32,
-    cycle_finished: u32,
+    cycle_just_finished: u32,
 }
 
 
@@ -148,15 +148,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
                     anim_storage_array[current_sprite.anim_buffer_index].current_frame += 1u;
                     anim_storage_array[current_sprite.anim_buffer_index].counter = 0.0;
                 } else {
-                    if anim_storage_array[current_sprite.anim_buffer_index].cycle_finished == 0u {
-                        anim_storage_array[current_sprite.anim_buffer_index].cycle_finished += 1u;
-                    } else if anim_storage_array[current_sprite.anim_buffer_index].cycle_finished == 1u {
-                        anim_storage_array[current_sprite.anim_buffer_index].cycle_finished += 1u;
+                    if anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished == 0u {
+                        anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished += 1u;
+                    } else if anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished == 1u {
+                        anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished += 1u;
                         anim_storage_array[current_sprite.anim_buffer_index].cycles += 1u;
                     } else {
                         anim_storage_array[current_sprite.anim_buffer_index].current_frame = 0u;
                         anim_storage_array[current_sprite.anim_buffer_index].loop_paused = 0u;
-                        anim_storage_array[current_sprite.anim_buffer_index].cycle_finished = 0u;
+                        anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished = 0u;
                         anim_storage_array[current_sprite.anim_buffer_index].counter = 0.0;
                     }
                 }
@@ -168,15 +168,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
                     anim_storage_array[current_sprite.anim_buffer_index].current_frame -= 1u;
                     anim_storage_array[current_sprite.anim_buffer_index].counter = 0.0;
                 } else {
-                    if anim_storage_array[current_sprite.anim_buffer_index].cycle_finished == 0u {
-                        anim_storage_array[current_sprite.anim_buffer_index].cycle_finished += 1u;
-                    } else if anim_storage_array[current_sprite.anim_buffer_index].cycle_finished == 1u {
-                        anim_storage_array[current_sprite.anim_buffer_index].cycle_finished += 1u;
+                    if anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished == 0u {
+                        anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished += 1u;
+                    } else if anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished == 1u {
+                        anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished += 1u;
                         anim_storage_array[current_sprite.anim_buffer_index].cycles += 1u;
                     } else {
                         anim_storage_array[current_sprite.anim_buffer_index].current_frame = current_sprite.frames - 1u;
                         anim_storage_array[current_sprite.anim_buffer_index].loop_paused = 0u;
-                        anim_storage_array[current_sprite.anim_buffer_index].cycle_finished = 0u;
+                        anim_storage_array[current_sprite.anim_buffer_index].cycle_just_finished = 0u;
                         anim_storage_array[current_sprite.anim_buffer_index].counter = 0.0;
                     }
                 }

@@ -8,7 +8,10 @@
 )]
 #![feature(path_file_prefix, alloc_layout_extra)]
 
-use std::{mem::MaybeUninit, slice::from_raw_parts};
+use std::{
+    mem::{size_of, MaybeUninit},
+    slice::from_raw_parts,
+};
 
 pub use ecs;
 pub use winit;
@@ -21,7 +24,7 @@ pub struct Animation {
     pub loop_paused: u32,
     started: u32,
     pub cycles: u32,
-    pub cycle_finished: u32,
+    pub cycle_just_finished: u32,
 }
 impl Animation {
     fn new_empty() -> Self {
@@ -31,7 +34,7 @@ impl Animation {
             loop_paused: 0,
             started: 0,
             cycles: 0,
-            cycle_finished: 0,
+            cycle_just_finished: 0,
         }
     }
 }
@@ -55,7 +58,7 @@ pub struct SpriteMaster3000<'this> {
     table: &'this mut ecs::Table,
     queue: &'this wgpu::Queue,
     buffer: &'this wgpu::Buffer,
-    anim_data: &'this Vec<Animation>,
+    pub anim_data: &'this Vec<Animation>,
 }
 impl<'this> SpriteMaster3000<'this> {
     fn new(
@@ -82,6 +85,21 @@ impl<'this> SpriteMaster3000<'this> {
         }
     }
 
+    fn double_eveything(&mut self) {
+        self.occupied_indices
+            .append(&mut vec![false; self.occupied_indices.len()]);
+        self.names.append(&mut vec![""; self.names.len()]);
+    }
+
+    fn update_after_doubling(
+        &mut self,
+        buffer: *const wgpu::Buffer,
+        anim_data: *const Vec<Animation>,
+    ) {
+        self.buffer = unsafe { buffer.as_ref().unwrap() };
+        self.anim_data = unsafe { anim_data.as_ref().unwrap() };
+    }
+
     pub fn read_sprite<'a, 'b>(&self, sparse_index: usize) -> Result<&'b Sprite, &'static str> {
         Ok(self
             .table
@@ -91,6 +109,7 @@ impl<'this> SpriteMaster3000<'this> {
 
     pub fn read_anim_data(&self, sparse_index: usize) -> Result<Animation, &'static str> {
         let sprite = self.read_sprite(sparse_index)?;
+        // todo this is the jank point
         Ok(self.anim_data[sprite.anim_buffer_index as usize])
     }
 
@@ -108,7 +127,14 @@ impl<'this> SpriteMaster3000<'this> {
                 break;
             }
         }
-        buffer_index.unwrap()
+        if !self.occupied_indices.contains(&false) {
+            self.double_eveything();
+        }
+        if buffer_index.is_none() {
+            self.request_index()
+        } else {
+            buffer_index.unwrap()
+        }
     }
 
     pub fn set_anim_data(
@@ -212,11 +238,14 @@ impl<'this> SpriteMaster3000<'this> {
     }
 
     fn free_index(&mut self, anim_buffer_index: u32) {
+        // todo this is also a jank point
+        let index_size = anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64;
         self.queue.write_buffer(
             self.buffer,
-            anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
+            index_size,
             bytemuck::cast_slice(&[Animation::new_empty()]),
         );
+
         self.occupied_indices[anim_buffer_index as usize] = false;
         self.names[anim_buffer_index as usize] = "";
     }
@@ -262,7 +291,6 @@ impl<'this> SpriteMaster3000<'this> {
     }
 }
 
-// todo, square collision
 /// specify the depth as 0.5 to enable y sorting
 #[repr(C)]
 #[derive(Debug)]
@@ -583,7 +611,6 @@ pub fn run(
     surface.configure(&device, &surface_config);
 
     // loading texture and it's meta data
-    // todo, make this multiple pages if the atlas is too big, then make sure you can index animation on multiple rows instead of a single one
     let current_dir = std::env::current_dir().unwrap();
     let mut texture_dir = current_dir.clone();
     texture_dir.push("res/texture.png");
@@ -592,12 +619,14 @@ pub fn run(
         .decode()
         .unwrap()
         .into_rgba8();
+    // todo, rearrange the image data into a long thin one if needed, according a loaded metadata file
+    let pages_to_assign = 1;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
             width: texture_data.width(),
             height: texture_data.height(),
-            depth_or_array_layers: 1,
+            depth_or_array_layers: pages_to_assign,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -628,6 +657,10 @@ pub fn run(
         },
     );
 
+    // sound system todo
+
+    // font handler todo
+
     // uniform data
     let mut uniform_data = Uniform {
         height_resolution: minimal_half_height_resolution,
@@ -652,7 +685,7 @@ pub fn run(
     queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
 
     // storage buffer
-    let sprite_storage_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let mut sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         mapped_at_creation: false,
         size: std::mem::size_of::<Sprite>() as u64 * max_sprites as u64,
@@ -660,10 +693,9 @@ pub fn run(
             | wgpu::BufferUsages::COPY_SRC
             | wgpu::BufferUsages::STORAGE,
     });
-    let sprite_anim_data_storage_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let mut animation_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         mapped_at_creation: false,
-        // assuming that all sprites can be animated
         size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC
@@ -671,8 +703,8 @@ pub fn run(
     });
 
     // swap buffer
-    let buffer_1 = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("uwu buffer"),
+    let mut swap_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
         mapped_at_creation: false,
         size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
@@ -681,9 +713,9 @@ pub fn run(
             | wgpu::BufferUsages::MAP_READ,
     });
 
-    // collision buffer
+    // collision buffer todo
     let collision_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("uwu buffer"),
+        label: None,
         mapped_at_creation: false,
         size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
@@ -692,7 +724,7 @@ pub fn run(
             | wgpu::BufferUsages::MAP_READ,
     });
     let collision_fetch_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("uwu buffer"),
+        label: None,
         mapped_at_creation: false,
         size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
@@ -765,7 +797,7 @@ pub fn run(
             },
         ],
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let mut bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &bind_group_layout,
         entries: &[
@@ -780,7 +812,7 @@ pub fn run(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &sprite_storage_buffer,
+                    buffer: &sprite_buffer,
                     offset: 0,
                     size: None,
                 }),
@@ -788,7 +820,7 @@ pub fn run(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &sprite_anim_data_storage_buffer,
+                    buffer: &animation_buffer,
                     offset: 0,
                     size: None,
                 }),
@@ -861,11 +893,11 @@ pub fn run(
         multiview: None,
     });
 
-    // all the sprites, which is sortet then submitted to the storage buffer
-    let mut sorted_sprites: Vec<Sprite> = Vec::with_capacity(max_sprites as usize);
-
     // ecs and the important states
     let mut ecs = ecs::ECS::new(entry_point);
+
+    // all the sprites, which is sortet then submitted to the storage buffer
+    let mut sorted_sprites: Vec<Sprite> = Vec::with_capacity(max_sprites as usize);
 
     // animation data
     let mut anim_data = vec![Animation::new_empty(); max_sprites as usize];
@@ -876,7 +908,7 @@ pub fn run(
         max_sprites,
         &mut ecs.table,
         &queue,
-        &sprite_anim_data_storage_buffer,
+        &animation_buffer,
         &anim_data,
     );
 
@@ -958,14 +990,134 @@ pub fn run(
                 uniform_data.global_offset_x = uni.global_offset_x;
                 uniform_data.global_offset_y = uni.global_offset_y;
 
-                // load, sort sprites
-                // todo, change to new double sized buffer if it's reaching limit
-                // maybe we can sort the sprites in shader?? that way it would know how to sort
                 let sprites = ecs.table.read_column::<Sprite>().unwrap();
                 unsafe {
+                    // todo still kinda janky bc adding new sprites is not the only situation where you need addition buffer room,
+                    // changing animation also take addition storage
+                    if sorted_sprites.capacity() * 2 < sprites.len() {
+                        // double the len for sorted sprites & anim data
+                        sorted_sprites.reserve(sorted_sprites.len());
+                        anim_data.append(&mut vec![Animation::new_empty(); anim_data.len()]);
+
+                        // all buffers too, but before that copy all the contents from the old buffer to the new ones, make sure it's finished before
+                        // proceeding
+                        let mut buffer_transfer_encoder = device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+
+                        let new_sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                            label: None,
+                            mapped_at_creation: false,
+                            size: sprite_buffer.size() * 2,
+                            usage: wgpu::BufferUsages::COPY_DST
+                                | wgpu::BufferUsages::COPY_SRC
+                                | wgpu::BufferUsages::STORAGE,
+                        });
+                        buffer_transfer_encoder.copy_buffer_to_buffer(
+                            &sprite_buffer,
+                            0,
+                            &new_sprite_buffer,
+                            0,
+                            sprite_buffer.size(),
+                        );
+
+                        let new_animation_storage = device.create_buffer(&wgpu::BufferDescriptor {
+                            label: None,
+                            mapped_at_creation: false,
+                            size: animation_buffer.size() * 2,
+                            usage: wgpu::BufferUsages::COPY_DST
+                                | wgpu::BufferUsages::COPY_SRC
+                                | wgpu::BufferUsages::STORAGE,
+                        });
+                        buffer_transfer_encoder.copy_buffer_to_buffer(
+                            &animation_buffer,
+                            0,
+                            &new_animation_storage,
+                            0,
+                            animation_buffer.size(),
+                        );
+
+                        let new_swap_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                            label: None,
+                            mapped_at_creation: false,
+                            size: swap_buffer.size() * 2,
+                            usage: wgpu::BufferUsages::COPY_DST
+                                | wgpu::BufferUsages::COPY_SRC
+                                | wgpu::BufferUsages::STORAGE
+                                | wgpu::BufferUsages::MAP_READ,
+                        });
+                        queue.submit(Some(buffer_transfer_encoder.finish()));
+                        // must destroy the buffers properly after transferring
+                        sprite_buffer.destroy();
+                        animation_buffer.destroy();
+                        swap_buffer.destroy();
+
+                        sprite_buffer = new_sprite_buffer;
+                        animation_buffer = new_animation_storage;
+                        swap_buffer = new_swap_buffer;
+
+                        let sprite_master = ecs.table.read_state::<SpriteMaster3000>().unwrap();
+                        sprite_master.update_after_doubling(&animation_buffer, &anim_data);
+
+                        bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: None,
+                            layout: &bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &uniform_buffer,
+                                        offset: 0,
+                                        size: None,
+                                    }),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &sprite_buffer,
+                                        offset: 0,
+                                        size: None,
+                                    }),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &animation_buffer,
+                                        offset: 0,
+                                        size: None,
+                                    }),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &texture.create_view(&wgpu::TextureViewDescriptor {
+                                            label: None,
+                                            format: None,
+                                            dimension: None,
+                                            aspect: wgpu::TextureAspect::All,
+                                            base_mip_level: 0,
+                                            mip_level_count: None,
+                                            base_array_layer: 0,
+                                            array_layer_count: None,
+                                        }),
+                                    ),
+                                },
+                            ],
+                        });
+
+                        println!(
+                            "{:?}, {:?}, {:?}, {:?}",
+                            anim_data.len(),
+                            sprite_buffer.size() / std::mem::size_of::<Sprite>() as u64,
+                            animation_buffer.size() / std::mem::size_of::<Animation>() as u64,
+                            swap_buffer.size() / std::mem::size_of::<Animation>() as u64,
+                        );
+                    }
+
                     sorted_sprites.set_len(sprites.len());
                     std::ptr::copy(sprites.as_ptr(), sorted_sprites.as_mut_ptr(), sprites.len());
                 };
+
+                // have to sort all sprites every frame tho
                 sorted_sprites[0..sprites.len()].sort_by(|x, y| {
                     if x.depth == 0.5 && y.depth == 0.5 {
                         (y.pos_y - y.origin).total_cmp(&(x.pos_y - x.origin))
@@ -977,7 +1129,7 @@ pub fn run(
                 // write buffers; local uniform -> shader uniform
                 queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
                 queue.write_buffer(
-                    &sprite_storage_buffer,
+                    &sprite_buffer,
                     0,
                     bytemuck::cast_slice(unsafe {
                         from_raw_parts(
@@ -990,16 +1142,14 @@ pub fn run(
                 // create encoder
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-
                 // copying buffer
                 encoder.copy_buffer_to_buffer(
-                    &sprite_anim_data_storage_buffer,
+                    &animation_buffer,
                     0,
-                    &buffer_1,
+                    &swap_buffer,
                     0,
-                    std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+                    animation_buffer.size(),
                 );
-
                 // render
                 let canvas = surface.get_current_texture().unwrap();
                 let canvas_view = canvas
@@ -1040,12 +1190,12 @@ pub fn run(
                 canvas.present();
 
                 // mapping the buffer, after waiting for it to map copy the content to the host side of the buffer, then finally unmap it
-                buffer_1.slice(..).map_async(wgpu::MapMode::Read, |x| {});
+                swap_buffer.slice(..).map_async(wgpu::MapMode::Read, |x| {});
                 device.poll(wgpu::MaintainBase::Wait);
                 anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
-                    &buffer_1.slice(..).get_mapped_range()[..],
+                    &swap_buffer.slice(..).get_mapped_range()[..],
                 ));
-                buffer_1.unmap();
+                swap_buffer.unmap();
             }
             winit::event::Event::WindowEvent { event, .. } => match event {
                 winit::event::WindowEvent::Resized(new_size) => {
