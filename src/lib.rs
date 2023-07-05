@@ -15,11 +15,13 @@ pub use winit;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Animation {
+pub struct Animation {
     counter: f32,
-    current_frame: u32,
-    loop_paused: u32,
+    pub current_frame: u32,
+    pub loop_paused: u32,
     started: u32,
+    pub cycles: u32,
+    pub cycle_finished: u32,
 }
 impl Animation {
     fn new_empty() -> Self {
@@ -28,11 +30,13 @@ impl Animation {
             current_frame: 0,
             loop_paused: 0,
             started: 0,
+            cycles: 0,
+            cycle_finished: 0,
         }
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 struct TextureDescription {
     tex_x: u32,
     tex_y: u32,
@@ -44,12 +48,14 @@ struct TextureDescription {
     frames_per_sec: u32,
 }
 
+// todo introduce the concept of animation queue
 pub struct SpriteMaster3000<'this> {
     map: std::collections::HashMap<String, TextureDescription>,
     pub occupied_indices: Vec<bool>,
     table: &'this mut ecs::Table,
     queue: &'this wgpu::Queue,
     buffer: &'this wgpu::Buffer,
+    anim_data: &'this Vec<Animation>,
 }
 impl<'this> SpriteMaster3000<'this> {
     fn new(
@@ -58,6 +64,7 @@ impl<'this> SpriteMaster3000<'this> {
         table: *mut ecs::Table,
         queue: *const wgpu::Queue,
         buffer: *const wgpu::Buffer,
+        anim_data: *const Vec<Animation>,
     ) -> Self {
         current_dir.push("res/texture.json");
         let val = std::fs::read(current_dir).expect("cannot open file from this directory, either file not exist or don't have the permission");
@@ -70,11 +77,17 @@ impl<'this> SpriteMaster3000<'this> {
             table: unsafe { table.as_mut().unwrap() },
             queue: unsafe { queue.as_ref().unwrap() },
             buffer: unsafe { buffer.as_ref().unwrap() },
+            anim_data: unsafe { anim_data.as_ref().unwrap() },
         }
     }
 
-    pub fn print(&self) {
-        println!("{:?}", self.map);
+    pub fn read_anim_data(&self, sparse_index: usize) -> Result<Animation, &'static str> {
+        let buffer_index = self
+            .table
+            .read_single::<Sprite>(sparse_index)
+            .ok_or("invalid index")?
+            .anim_buffer_index;
+        Ok(self.anim_data[buffer_index as usize])
     }
 
     pub fn insert_sprite<'a, 'b>(
@@ -226,12 +239,7 @@ impl<'this> SpriteMaster3000<'this> {
             self.queue.write_buffer(
                 self.buffer,
                 sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
-                bytemuck::cast_slice(&[Animation {
-                    counter: 0.0,
-                    current_frame: 0,
-                    loop_paused: 0,
-                    started: 0,
-                }]),
+                bytemuck::cast_slice(&[Animation::new_empty()]),
             );
             self.occupied_indices[sprite.anim_buffer_index as usize] = false;
         } else {
@@ -287,12 +295,7 @@ impl<'this> SpriteMaster3000<'this> {
                 self.queue.write_buffer(
                     self.buffer,
                     sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
-                    bytemuck::cast_slice(&[Animation {
-                        counter: 0.0,
-                        current_frame: 0,
-                        loop_paused: 0,
-                        started: 0,
-                    }]),
+                    bytemuck::cast_slice(&[Animation::new_empty()]),
                 );
                 self.occupied_indices[sprite.anim_buffer_index as usize] = false;
             } else {
@@ -622,7 +625,7 @@ pub fn run(
         format: surface.get_capabilities(&adapter).formats[0],
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         alpha_mode: surface.get_capabilities(&adapter).alpha_modes[0],
-        present_mode: wgpu::PresentMode::Fifo,
+        present_mode: wgpu::PresentMode::Immediate,
         view_formats: vec![],
     };
     surface.configure(&device, &surface_config);
@@ -915,6 +918,9 @@ pub fn run(
     // ecs and the important states
     let mut ecs = ecs::ECS::new(entry_point);
 
+    // animation data
+    let mut anim_data = vec![Animation::new_empty(); max_sprites as usize];
+
     // texture map data
     let mut sprite_master = SpriteMaster3000::new(
         current_dir.clone(),
@@ -922,10 +928,8 @@ pub fn run(
         &mut ecs.table,
         &queue,
         &sprite_anim_data_storage_buffer,
+        &anim_data,
     );
-
-    // animation data
-    let mut anim_data = vec![Animation::new_empty(); max_sprites as usize];
 
     // ecs prep work
     ecs.table.add_state(uniform_data).unwrap();
@@ -1098,10 +1102,7 @@ pub fn run(
                     buffer_status_3 = 0;
                 }
 
-                println!(
-                    "{:?},{:?},{:?}",
-                    buffer_status_1, buffer_status_2, buffer_status_3
-                );
+                // println!("{:?}", anim_data[0].current_frame);
 
                 // render
                 let canvas = surface.get_current_texture().unwrap();
