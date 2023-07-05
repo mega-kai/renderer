@@ -705,6 +705,30 @@ pub fn run(
             | wgpu::BufferUsages::STORAGE,
     });
 
+    // swap buffers
+    let mut buffer_1_copied = false;
+    let mut buffer_1_mapped = false;
+
+    let buffer_1 = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uwu buffer"),
+        mapped_at_creation: false,
+        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+        usage: wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::MAP_READ,
+    });
+    let mut buffer_2_copied_n_mapped = false;
+    let buffer_2 = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        mapped_at_creation: false,
+        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+        usage: wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::MAP_READ,
+    });
+
     // depth texture for transparency sorting
     let mut depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -987,13 +1011,49 @@ pub fn run(
                 );
 
                 // render
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                // buffer swapping
+                if !buffer_1_copied {
+                    encoder.copy_buffer_to_buffer(
+                        &sprite_anim_data_storage_buffer,
+                        0,
+                        &buffer_2,
+                        0,
+                        std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+                    );
+                    buffer_2
+                        .slice(..)
+                        .map_async(wgpu::MapMode::Read, |x| println!("{:?}", x));
+                    buffer_1_copied = true;
+                } else {
+                    // this is a cycle later, which probably means the mapping is done i think
+                    println!(
+                        "{:?}",
+                        bytemuck::cast_slice::<u8, Animation>(
+                            &buffer_2.slice(..).get_mapped_range()[..],
+                        )
+                    );
+                    buffer_2.unmap();
+                    buffer_1_copied = false;
+                }
+                // if !buffer_2_copied {
+                //     encoder.copy_buffer_to_buffer(
+                //         &sprite_anim_data_storage_buffer,
+                //         0,
+                //         &buffer_2,
+                //         0,
+                //         std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+                //     );
+                //     buffer_2_copied = true;
+                // }
+
+                // render
                 let canvas = surface.get_current_texture().unwrap();
                 let canvas_view = canvas
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
                 let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let mut encoder =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: None,
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1022,7 +1082,9 @@ pub fn run(
                 render_pass.set_bind_group(0, &bind_group, &[]);
                 render_pass.draw(0..sprites.len() as u32 * 6, 0..1);
                 drop(render_pass);
+                // submit all the changes in this frame
                 queue.submit(Some(encoder.finish()));
+                // present the result
                 canvas.present();
             }
             winit::event::Event::WindowEvent { event, .. } => match event {
