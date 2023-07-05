@@ -112,16 +112,6 @@ impl<'this> SpriteMaster3000<'this> {
         buffer_index.unwrap()
     }
 
-    fn free_index(&mut self, index: usize) {
-        self.queue.write_buffer(
-            self.buffer,
-            index as u64,
-            bytemuck::cast_slice(&[Animation::new_empty()]),
-        );
-        self.occupied_indices[index] = false;
-        self.names[index] = "";
-    }
-
     pub fn set_anim_data(
         &mut self,
         texture: &'static str,
@@ -148,8 +138,8 @@ impl<'this> SpriteMaster3000<'this> {
     ) -> Result<(usize, &'b mut Sprite), &'static str> {
         let mut buffer_index = self.request_index();
         let mut sprite = Sprite::new_empty();
-        sprite.anim_buffer_index = buffer_index;
 
+        sprite.anim_buffer_index = buffer_index;
         self.names[buffer_index as usize] = texture;
 
         self.set_anim_data(texture, &mut sprite)?;
@@ -172,7 +162,6 @@ impl<'this> SpriteMaster3000<'this> {
 
         let mut sprite = Sprite::new_empty();
         sprite.anim_buffer_index = buffer_index;
-
         self.names[buffer_index as usize] = texture;
 
         self.set_anim_data(texture, &mut sprite)?;
@@ -223,19 +212,19 @@ impl<'this> SpriteMaster3000<'this> {
         Ok(self.table.insert_new(sprite))
     }
 
+    fn free_index(&mut self, anim_buffer_index: u32) {
+        self.queue.write_buffer(
+            self.buffer,
+            anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
+            bytemuck::cast_slice(&[Animation::new_empty()]),
+        );
+        self.occupied_indices[anim_buffer_index as usize] = false;
+        self.names[anim_buffer_index as usize] = "";
+    }
+
     pub fn remove_sprite(&mut self, sparse_index: usize) -> Result<(), &'static str> {
         let sprite = self.table.remove::<Sprite>(sparse_index)?;
-        if self.occupied_indices[sprite.anim_buffer_index as usize] == true {
-            self.queue.write_buffer(
-                self.buffer,
-                sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
-                bytemuck::cast_slice(&[Animation::new_empty()]),
-            );
-            self.occupied_indices[sprite.anim_buffer_index as usize] = false;
-            self.names[sprite.anim_buffer_index as usize] = "";
-        } else {
-            panic!("index not matching");
-        }
+        self.free_index(sprite.anim_buffer_index);
         Ok(())
     }
 
@@ -247,11 +236,14 @@ impl<'this> SpriteMaster3000<'this> {
         texture: &'static str,
         cut_or_queue: bool,
     ) -> Result<(), &'static str> {
-        let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
-        let sprite = self
+        let buffer_index = self.request_index();
+        let mut sprite = self
             .table
             .read_single::<Sprite>(sparse_index)
             .ok_or("invalid index")?;
+        self.set_anim_data(texture, sprite)?;
+
+        let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
 
         if tex_data.tex_x as f32 == sprite.tex_x
             && tex_data.tex_y as f32 == sprite.tex_y
@@ -262,44 +254,12 @@ impl<'this> SpriteMaster3000<'this> {
             return Ok(());
         }
 
-        let mut buffer_index = None::<u32>;
-        for each in 0..self.occupied_indices.len() {
-            if self.occupied_indices[each] == false {
-                self.occupied_indices[each] = true;
-                buffer_index = Some(each as u32);
-                break;
-            }
-        }
+        self.free_index(sprite.anim_buffer_index);
 
-        if buffer_index.is_some() {
-            sprite.tex_x = tex_data.tex_x as f32;
-            sprite.tex_y = tex_data.tex_y as f32;
-            sprite.tex_width = tex_data.tex_width as f32;
-            sprite.tex_height = tex_data.tex_height as f32;
-            sprite.width = tex_data.tex_width as f32;
-            sprite.height = tex_data.tex_height as f32;
-            sprite.frames = tex_data.frames;
-            sprite.looping = tex_data.looping;
-            sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
+        sprite.anim_buffer_index = buffer_index;
+        self.names[buffer_index as usize] = texture;
 
-            if self.occupied_indices[sprite.anim_buffer_index as usize] == true {
-                self.queue.write_buffer(
-                    self.buffer,
-                    sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64,
-                    bytemuck::cast_slice(&[Animation::new_empty()]),
-                );
-                self.occupied_indices[sprite.anim_buffer_index as usize] = false;
-            } else {
-                panic!("index not matching");
-            }
-
-            self.names[sprite.anim_buffer_index as usize] = "";
-            sprite.anim_buffer_index = buffer_index.unwrap();
-            self.names[buffer_index.unwrap() as usize] = texture;
-            Ok(())
-        } else {
-            panic!("failed to find avaible buffer index")
-        }
+        Ok(())
     }
 }
 
