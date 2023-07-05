@@ -52,6 +52,7 @@ struct TextureDescription {
 pub struct SpriteMaster3000<'this> {
     map: std::collections::HashMap<String, TextureDescription>,
     pub occupied_indices: Vec<bool>,
+    pub names: Vec<&'static str>,
     table: &'this mut ecs::Table,
     queue: &'this wgpu::Queue,
     buffer: &'this wgpu::Buffer,
@@ -78,25 +79,28 @@ impl<'this> SpriteMaster3000<'this> {
             queue: unsafe { queue.as_ref().unwrap() },
             buffer: unsafe { buffer.as_ref().unwrap() },
             anim_data: unsafe { anim_data.as_ref().unwrap() },
+            names: vec![""; sprite_num as usize],
         }
     }
 
-    pub fn read_anim_data(&self, sparse_index: usize) -> Result<Animation, &'static str> {
-        let buffer_index = self
+    pub fn read_sprite<'a, 'b>(&self, sparse_index: usize) -> Result<&'b Sprite, &'static str> {
+        Ok(self
             .table
             .read_single::<Sprite>(sparse_index)
-            .ok_or("invalid index")?
-            .anim_buffer_index;
-        Ok(self.anim_data[buffer_index as usize])
+            .ok_or("invalid index")?)
     }
 
-    pub fn insert_sprite<'a, 'b>(
-        &'a mut self,
-        sparse_index: usize,
-        texture: &str,
-        pos: (f32, f32),
-        depth: f32,
-    ) -> Result<&'b mut Sprite, &'static str> {
+    pub fn read_anim_data(&self, sparse_index: usize) -> Result<Animation, &'static str> {
+        let sprite = self.read_sprite(sparse_index)?;
+        Ok(self.anim_data[sprite.anim_buffer_index as usize])
+    }
+
+    pub fn get_name(&self, sparse_index: usize) -> Result<&'static str, &'static str> {
+        let sprite = self.read_sprite(sparse_index)?;
+        Ok(self.names[sprite.anim_buffer_index as usize])
+    }
+
+    fn request_index(&mut self) -> u32 {
         let mut buffer_index = None::<u32>;
         for each in 0..self.occupied_indices.len() {
             if self.occupied_indices[each] == false {
@@ -105,27 +109,98 @@ impl<'this> SpriteMaster3000<'this> {
                 break;
             }
         }
-        if buffer_index.is_some() {
-            let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
-            let mut sprite = Sprite::new_empty();
-            sprite.anim_buffer_index = buffer_index.unwrap();
-            sprite.tex_x = tex_data.tex_x as f32;
-            sprite.tex_y = tex_data.tex_y as f32;
-            sprite.tex_width = tex_data.tex_width as f32;
-            sprite.tex_height = tex_data.tex_height as f32;
-            sprite.width = tex_data.tex_width as f32;
-            sprite.height = tex_data.tex_height as f32;
-            sprite.frames = tex_data.frames;
+        buffer_index.unwrap()
+    }
 
-            sprite.depth = depth;
-            sprite.pos_x = pos.0;
-            sprite.pos_y = pos.1;
+    fn free_index(&mut self, index: usize) {
+        self.queue.write_buffer(
+            self.buffer,
+            index as u64,
+            bytemuck::cast_slice(&[Animation::new_empty()]),
+        );
+        self.occupied_indices[index] = false;
+        self.names[index] = "";
+    }
 
-            sprite.looping = tex_data.looping;
-            sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
-            Ok(self.table.insert_at(sparse_index, sprite)?)
-        } else {
-            panic!("failed to find avaible buffer index")
+    pub fn set_anim_data(
+        &mut self,
+        texture: &'static str,
+        sprite: &mut Sprite,
+    ) -> Result<(), &'static str> {
+        let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
+        sprite.tex_x = tex_data.tex_x as f32;
+        sprite.tex_y = tex_data.tex_y as f32;
+        sprite.tex_width = tex_data.tex_width as f32;
+        sprite.tex_height = tex_data.tex_height as f32;
+        sprite.width = tex_data.tex_width as f32;
+        sprite.height = tex_data.tex_height as f32;
+        sprite.frames = tex_data.frames;
+        sprite.looping = tex_data.looping;
+        sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
+        Ok(())
+    }
+
+    pub fn add_sprite<'a, 'b>(
+        &'a mut self,
+        texture: &'static str,
+        pos: (f32, f32),
+        depth: f32,
+    ) -> Result<(usize, &'b mut Sprite), &'static str> {
+        let mut buffer_index = self.request_index();
+        let mut sprite = Sprite::new_empty();
+        sprite.anim_buffer_index = buffer_index;
+
+        self.names[buffer_index as usize] = texture;
+
+        self.set_anim_data(texture, &mut sprite)?;
+
+        sprite.depth = depth;
+        sprite.pos_x = pos.0;
+        sprite.pos_y = pos.1;
+
+        Ok(self.table.insert_new(sprite))
+    }
+
+    pub fn insert_sprite<'a, 'b>(
+        &'a mut self,
+        sparse_index: usize,
+        texture: &'static str,
+        pos: (f32, f32),
+        depth: f32,
+    ) -> Result<&'b mut Sprite, &'static str> {
+        let mut buffer_index = self.request_index();
+
+        let mut sprite = Sprite::new_empty();
+        sprite.anim_buffer_index = buffer_index;
+
+        self.names[buffer_index as usize] = texture;
+
+        self.set_anim_data(texture, &mut sprite)?;
+
+        sprite.depth = depth;
+        sprite.pos_x = pos.0;
+        sprite.pos_y = pos.1;
+
+        Ok(self.table.insert_at(sparse_index, sprite)?)
+    }
+
+    fn copy_sprite(
+        &mut self,
+        index_to_clone: usize,
+        requested_index: u32,
+    ) -> Result<Sprite, &'static str> {
+        unsafe {
+            let sprite_clone = self
+                .table
+                .read_single::<Sprite>(index_to_clone)
+                .ok_or("index not valid")?;
+            let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
+            std::ptr::copy(sprite_clone, uninit_sprite.as_mut_ptr(), 1);
+            let mut sprite = uninit_sprite.assume_init();
+            sprite.anim_buffer_index = requested_index;
+            self.names[requested_index as usize] =
+                self.names[sprite_clone.anim_buffer_index as usize];
+            Ok(sprite)
         }
     }
 
@@ -134,103 +209,18 @@ impl<'this> SpriteMaster3000<'this> {
         index_to_clone: usize,
         index_to_insert: usize,
     ) -> Result<&'b mut Sprite, &'static str> {
-        let mut buffer_index = None::<u32>;
-        for each in 0..self.occupied_indices.len() {
-            if self.occupied_indices[each] == false {
-                self.occupied_indices[each] = true;
-                buffer_index = Some(each as u32);
-                break;
-            }
-        }
-        if buffer_index.is_some() {
-            unsafe {
-                let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
-                std::ptr::copy(
-                    self.table
-                        .read_single::<Sprite>(index_to_clone)
-                        .ok_or("index not valid")?,
-                    uninit_sprite.as_mut_ptr(),
-                    1,
-                );
-                let mut sprite = uninit_sprite.assume_init();
-
-                sprite.anim_buffer_index = buffer_index.unwrap();
-
-                Ok(self.table.insert_at(index_to_insert, sprite)?)
-            }
-        } else {
-            panic!("failed to find avaible buffer index")
-        }
-    }
-
-    pub fn add_sprite<'a, 'b>(
-        &'a mut self,
-        texture: &str,
-        pos: (f32, f32),
-        depth: f32,
-    ) -> Result<(usize, &'b mut Sprite), &'static str> {
-        let mut buffer_index = None::<u32>;
-        for each in 0..self.occupied_indices.len() {
-            if self.occupied_indices[each] == false {
-                self.occupied_indices[each] = true;
-                buffer_index = Some(each as u32);
-                break;
-            }
-        }
-        if buffer_index.is_some() {
-            let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
-            let mut sprite = Sprite::new_empty();
-            sprite.anim_buffer_index = buffer_index.unwrap();
-            sprite.tex_x = tex_data.tex_x as f32;
-            sprite.tex_y = tex_data.tex_y as f32;
-            sprite.tex_width = tex_data.tex_width as f32;
-            sprite.tex_height = tex_data.tex_height as f32;
-            sprite.width = tex_data.tex_width as f32;
-            sprite.height = tex_data.tex_height as f32;
-            sprite.frames = tex_data.frames;
-            sprite.looping = tex_data.looping;
-            sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
-
-            sprite.depth = depth;
-            sprite.pos_x = pos.0;
-            sprite.pos_y = pos.1;
-
-            Ok(self.table.insert_new(sprite))
-        } else {
-            panic!("failed to find avaible buffer index")
-        }
+        let mut buffer_index = self.request_index();
+        let mut sprite = self.copy_sprite(index_to_clone, buffer_index)?;
+        Ok(self.table.insert_at(index_to_insert, sprite)?)
     }
 
     pub fn clone_add<'a, 'b>(
         &'a mut self,
         index_to_clone: usize,
     ) -> Result<(usize, &'b mut Sprite), &'static str> {
-        unsafe {
-            let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
-            std::ptr::copy(
-                self.table
-                    .read_single::<Sprite>(index_to_clone)
-                    .ok_or("index not valid")?,
-                uninit_sprite.as_mut_ptr(),
-                1,
-            );
-            let mut sprite = uninit_sprite.assume_init();
-
-            let mut buffer_index = None::<u32>;
-            for each in 0..self.occupied_indices.len() {
-                if self.occupied_indices[each] == false {
-                    self.occupied_indices[each] = true;
-                    buffer_index = Some(each as u32);
-                    break;
-                }
-            }
-            if buffer_index.is_some() {
-                sprite.anim_buffer_index = buffer_index.unwrap();
-            } else {
-                panic!("failed to find avaible buffer index")
-            }
-            Ok(self.table.insert_new(sprite))
-        }
+        let mut buffer_index = self.request_index();
+        let mut sprite = self.copy_sprite(index_to_clone, buffer_index)?;
+        Ok(self.table.insert_new(sprite))
     }
 
     pub fn remove_sprite(&mut self, sparse_index: usize) -> Result<(), &'static str> {
@@ -242,6 +232,7 @@ impl<'this> SpriteMaster3000<'this> {
                 bytemuck::cast_slice(&[Animation::new_empty()]),
             );
             self.occupied_indices[sprite.anim_buffer_index as usize] = false;
+            self.names[sprite.anim_buffer_index as usize] = "";
         } else {
             panic!("index not matching");
         }
@@ -253,7 +244,7 @@ impl<'this> SpriteMaster3000<'this> {
     pub fn change_state(
         &mut self,
         sparse_index: usize,
-        texture: &str,
+        texture: &'static str,
         cut_or_queue: bool,
     ) -> Result<(), &'static str> {
         let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
@@ -302,7 +293,9 @@ impl<'this> SpriteMaster3000<'this> {
                 panic!("index not matching");
             }
 
+            self.names[sprite.anim_buffer_index as usize] = "";
             sprite.anim_buffer_index = buffer_index.unwrap();
+            self.names[buffer_index.unwrap() as usize] = texture;
             Ok(())
         } else {
             panic!("failed to find avaible buffer index")
@@ -625,7 +618,7 @@ pub fn run(
         format: surface.get_capabilities(&adapter).formats[0],
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         alpha_mode: surface.get_capabilities(&adapter).alpha_modes[0],
-        present_mode: wgpu::PresentMode::Immediate,
+        present_mode: wgpu::PresentMode::Fifo,
         view_formats: vec![],
     };
     surface.configure(&device, &surface_config);
