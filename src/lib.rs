@@ -47,19 +47,7 @@ struct TextureDescription {
     looping: u32,
     frames_per_sec: u32,
 }
-impl PartialEq for TextureDescription {
-    fn eq(&self, other: &Self) -> bool {
-        self.tex_x == other.tex_x
-            && self.tex_y == other.tex_y
-            && self.frames == other.frames
-            && self.looping == other.looping
-            && self.origin == other.origin
-            && self.tex_height == other.tex_height
-            && self.tex_width == other.tex_width
-    }
-}
 
-// todo introduce the concept of animation queue
 pub struct SpriteMaster3000<'this> {
     map: std::collections::HashMap<String, TextureDescription>,
     pub occupied_indices: Vec<bool>,
@@ -239,8 +227,6 @@ impl<'this> SpriteMaster3000<'this> {
         Ok(())
     }
 
-    /// true for cut, false for queue
-    // todo, cut or queue
     pub fn change_state(
         &mut self,
         sparse_index: usize,
@@ -253,8 +239,12 @@ impl<'this> SpriteMaster3000<'this> {
             .read_single::<Sprite>(sparse_index)
             .ok_or("invalid index")?;
 
-        if tex_data == sprite.to_desc() {
-            println!("uwu same");
+        if tex_data.tex_x as f32 == sprite.tex_x
+            && tex_data.tex_y as f32 == sprite.tex_y
+            && tex_data.frames == sprite.frames
+            && tex_data.tex_height as f32 == sprite.tex_height
+            && tex_data.tex_width as f32 == sprite.tex_width
+        {
             return Ok(());
         }
 
@@ -335,20 +325,6 @@ impl Sprite {
 
             flipped_x: 0,
             flipped_y: 0,
-        }
-    }
-
-    fn to_desc(&self) -> TextureDescription {
-        TextureDescription {
-            tex_x: self.tex_x as u32,
-            tex_y: self.tex_y as u32,
-            tex_width: self.tex_width as u32,
-            tex_height: self.tex_height as u32,
-            frames: self.frames as u32,
-            origin: self.origin as u32,
-            looping: self.looping as u32,
-            // this is not gonna be accurate
-            frames_per_sec: (1.0 / self.duration) as u32,
         }
     }
 }
@@ -694,33 +670,10 @@ pub fn run(
             | wgpu::BufferUsages::STORAGE,
     });
 
-    // swap buffers
-    let mut buffer_status_1 = 0;
+    // swap buffer
     let buffer_1 = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uwu buffer"),
         mapped_at_creation: false,
-        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
-        usage: wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::MAP_READ,
-    });
-
-    let mut buffer_status_2 = 1;
-    let buffer_2 = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        mapped_at_creation: false,
-        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
-        usage: wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::MAP_READ,
-    });
-
-    let mut buffer_status_3 = 2;
-    let buffer_3 = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        mapped_at_creation: true,
         size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC
@@ -1014,71 +967,18 @@ pub fn run(
                     }),
                 );
 
-                // render
+                // create encoder
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-                // buffer swapping
-                if buffer_status_1 == 0 {
-                    encoder.copy_buffer_to_buffer(
-                        &sprite_anim_data_storage_buffer,
-                        0,
-                        &buffer_1,
-                        0,
-                        std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
-                    );
-                    buffer_status_1 += 1;
-                } else if buffer_status_1 == 1 {
-                    buffer_1.slice(..).map_async(wgpu::MapMode::Read, |x| {});
-                    buffer_status_1 += 1;
-                } else if buffer_status_1 == 2 {
-                    anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
-                        &buffer_1.slice(..).get_mapped_range()[..],
-                    ));
-                    buffer_1.unmap();
-                    buffer_status_1 = 0;
-                }
 
-                if buffer_status_2 == 0 {
-                    encoder.copy_buffer_to_buffer(
-                        &sprite_anim_data_storage_buffer,
-                        0,
-                        &buffer_2,
-                        0,
-                        std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
-                    );
-                    buffer_status_2 += 1;
-                } else if buffer_status_2 == 1 {
-                    buffer_2.slice(..).map_async(wgpu::MapMode::Read, |x| {});
-                    buffer_status_2 += 1;
-                } else if buffer_status_2 == 2 {
-                    anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
-                        &buffer_2.slice(..).get_mapped_range()[..],
-                    ));
-                    buffer_2.unmap();
-                    buffer_status_2 = 0;
-                }
-
-                if buffer_status_3 == 0 {
-                    encoder.copy_buffer_to_buffer(
-                        &sprite_anim_data_storage_buffer,
-                        0,
-                        &buffer_3,
-                        0,
-                        std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
-                    );
-                    buffer_status_3 += 1;
-                } else if buffer_status_3 == 1 {
-                    buffer_3.slice(..).map_async(wgpu::MapMode::Read, |x| {});
-                    buffer_status_3 += 1;
-                } else if buffer_status_3 == 2 {
-                    anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
-                        &buffer_3.slice(..).get_mapped_range()[..],
-                    ));
-                    buffer_3.unmap();
-                    buffer_status_3 = 0;
-                }
-
-                // println!("{:?}", anim_data[0].current_frame);
+                // copying buffer
+                encoder.copy_buffer_to_buffer(
+                    &sprite_anim_data_storage_buffer,
+                    0,
+                    &buffer_1,
+                    0,
+                    std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+                );
 
                 // render
                 let canvas = surface.get_current_texture().unwrap();
@@ -1118,6 +1018,14 @@ pub fn run(
                 queue.submit(Some(encoder.finish()));
                 // present the result
                 canvas.present();
+
+                // mapping the buffer, after waiting for it to map copy the content to the host side of the buffer, then finally unmap it
+                buffer_1.slice(..).map_async(wgpu::MapMode::Read, |x| {});
+                device.poll(wgpu::MaintainBase::Wait);
+                anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
+                    &buffer_1.slice(..).get_mapped_range()[..],
+                ));
+                buffer_1.unmap();
             }
             winit::event::Event::WindowEvent { event, .. } => match event {
                 winit::event::WindowEvent::Resized(new_size) => {
