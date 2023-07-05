@@ -36,7 +36,7 @@ impl Animation {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
 struct TextureDescription {
     tex_x: u32,
     tex_y: u32,
@@ -46,6 +46,17 @@ struct TextureDescription {
     origin: u32,
     looping: u32,
     frames_per_sec: u32,
+}
+impl PartialEq for TextureDescription {
+    fn eq(&self, other: &Self) -> bool {
+        self.tex_x == other.tex_x
+            && self.tex_y == other.tex_y
+            && self.frames == other.frames
+            && self.looping == other.looping
+            && self.origin == other.origin
+            && self.tex_height == other.tex_height
+            && self.tex_width == other.tex_width
+    }
 }
 
 // todo introduce the concept of animation queue
@@ -242,12 +253,8 @@ impl<'this> SpriteMaster3000<'this> {
             .read_single::<Sprite>(sparse_index)
             .ok_or("invalid index")?;
 
-        if tex_data.tex_x as f32 == sprite.tex_x
-            && tex_data.tex_y as f32 == sprite.tex_y
-            && tex_data.frames == sprite.frames
-            && tex_data.tex_height as f32 == sprite.tex_height
-            && tex_data.tex_width as f32 == sprite.tex_width
-        {
+        if tex_data == sprite.to_desc() {
+            println!("uwu same");
             return Ok(());
         }
 
@@ -328,6 +335,20 @@ impl Sprite {
 
             flipped_x: 0,
             flipped_y: 0,
+        }
+    }
+
+    fn to_desc(&self) -> TextureDescription {
+        TextureDescription {
+            tex_x: self.tex_x as u32,
+            tex_y: self.tex_y as u32,
+            tex_width: self.tex_width as u32,
+            tex_height: self.tex_height as u32,
+            frames: self.frames as u32,
+            origin: self.origin as u32,
+            looping: self.looping as u32,
+            // this is not gonna be accurate
+            frames_per_sec: (1.0 / self.duration) as u32,
         }
     }
 }
