@@ -21,6 +21,16 @@ struct Animation {
     loop_paused: u32,
     started: u32,
 }
+impl Animation {
+    fn new_empty() -> Self {
+        Self {
+            counter: 0.0,
+            current_frame: 0,
+            loop_paused: 0,
+            started: 0,
+        }
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct TextureDescription {
@@ -706,9 +716,7 @@ pub fn run(
     });
 
     // swap buffers
-    let mut buffer_1_copied = false;
-    let mut buffer_1_mapped = false;
-
+    let mut buffer_status_1 = 0;
     let buffer_1 = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uwu buffer"),
         mapped_at_creation: false,
@@ -718,10 +726,22 @@ pub fn run(
             | wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::MAP_READ,
     });
-    let mut buffer_2_copied_n_mapped = false;
+
+    let mut buffer_status_2 = 1;
     let buffer_2 = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         mapped_at_creation: false,
+        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+        usage: wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::MAP_READ,
+    });
+
+    let mut buffer_status_3 = 2;
+    let buffer_3 = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        mapped_at_creation: true,
         size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
         usage: wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC
@@ -896,7 +916,7 @@ pub fn run(
     let mut ecs = ecs::ECS::new(entry_point);
 
     // texture map data
-    let sprite_master = SpriteMaster3000::new(
+    let mut sprite_master = SpriteMaster3000::new(
         current_dir.clone(),
         max_sprites,
         &mut ecs.table,
@@ -904,6 +924,10 @@ pub fn run(
         &sprite_anim_data_storage_buffer,
     );
 
+    // animation data
+    let mut anim_data = vec![Animation::new_empty(); max_sprites as usize];
+
+    // ecs prep work
     ecs.table.add_state(uniform_data).unwrap();
     ecs.table.add_state(RunningState::Running).unwrap();
     ecs.table.add_state(sprite_master).unwrap();
@@ -1014,7 +1038,27 @@ pub fn run(
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 // buffer swapping
-                if !buffer_1_copied {
+                if buffer_status_1 == 0 {
+                    encoder.copy_buffer_to_buffer(
+                        &sprite_anim_data_storage_buffer,
+                        0,
+                        &buffer_1,
+                        0,
+                        std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+                    );
+                    buffer_status_1 += 1;
+                } else if buffer_status_1 == 1 {
+                    buffer_1.slice(..).map_async(wgpu::MapMode::Read, |x| {});
+                    buffer_status_1 += 1;
+                } else if buffer_status_1 == 2 {
+                    anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
+                        &buffer_1.slice(..).get_mapped_range()[..],
+                    ));
+                    buffer_1.unmap();
+                    buffer_status_1 = 0;
+                }
+
+                if buffer_status_2 == 0 {
                     encoder.copy_buffer_to_buffer(
                         &sprite_anim_data_storage_buffer,
                         0,
@@ -1022,31 +1066,39 @@ pub fn run(
                         0,
                         std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
                     );
-                    buffer_2
-                        .slice(..)
-                        .map_async(wgpu::MapMode::Read, |x| println!("{:?}", x));
-                    buffer_1_copied = true;
-                } else {
-                    // this is a cycle later, which probably means the mapping is done i think
-                    println!(
-                        "{:?}",
-                        bytemuck::cast_slice::<u8, Animation>(
-                            &buffer_2.slice(..).get_mapped_range()[..],
-                        )
-                    );
+                    buffer_status_2 += 1;
+                } else if buffer_status_2 == 1 {
+                    buffer_2.slice(..).map_async(wgpu::MapMode::Read, |x| {});
+                    buffer_status_2 += 1;
+                } else if buffer_status_2 == 2 {
+                    anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
+                        &buffer_2.slice(..).get_mapped_range()[..],
+                    ));
                     buffer_2.unmap();
-                    buffer_1_copied = false;
+                    buffer_status_2 = 0;
                 }
-                // if !buffer_2_copied {
-                //     encoder.copy_buffer_to_buffer(
-                //         &sprite_anim_data_storage_buffer,
-                //         0,
-                //         &buffer_2,
-                //         0,
-                //         std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
-                //     );
-                //     buffer_2_copied = true;
-                // }
+
+                if buffer_status_3 == 0 {
+                    encoder.copy_buffer_to_buffer(
+                        &sprite_anim_data_storage_buffer,
+                        0,
+                        &buffer_3,
+                        0,
+                        std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+                    );
+                    buffer_status_3 += 1;
+                } else if buffer_status_3 == 1 {
+                    buffer_3.slice(..).map_async(wgpu::MapMode::Read, |x| {});
+                    buffer_status_3 += 1;
+                } else if buffer_status_3 == 2 {
+                    anim_data.clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
+                        &buffer_3.slice(..).get_mapped_range()[..],
+                    ));
+                    buffer_3.unmap();
+                    buffer_status_3 = 0;
+                }
+
+                println!("{:?},{:?},{:?}", buffer_1, buffer_2, buffer_3);
 
                 // render
                 let canvas = surface.get_current_texture().unwrap();
