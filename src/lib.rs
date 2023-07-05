@@ -36,7 +36,7 @@ impl Animation {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 struct TextureDescription {
     tex_x: u32,
     tex_y: u32,
@@ -236,14 +236,11 @@ impl<'this> SpriteMaster3000<'this> {
         texture: &'static str,
         cut_or_queue: bool,
     ) -> Result<(), &'static str> {
-        let buffer_index = self.request_index();
-        let mut sprite = self
+        let tex_data = *self.map.get(texture).ok_or("wrong texture name")?;
+        let sprite = self
             .table
             .read_single::<Sprite>(sparse_index)
             .ok_or("invalid index")?;
-        self.set_anim_data(texture, sprite)?;
-
-        let tex_data = self.map.get(texture).ok_or("wrong texture name")?;
 
         if tex_data.tex_x as f32 == sprite.tex_x
             && tex_data.tex_y as f32 == sprite.tex_y
@@ -254,11 +251,16 @@ impl<'this> SpriteMaster3000<'this> {
             return Ok(());
         }
 
+        let mut buffer_index = self.request_index();
+
+        self.set_anim_data(texture, sprite)?;
+
         self.free_index(sprite.anim_buffer_index);
 
-        sprite.anim_buffer_index = buffer_index;
+        self.names[sprite.anim_buffer_index as usize] = "";
         self.names[buffer_index as usize] = texture;
 
+        sprite.anim_buffer_index = buffer_index;
         Ok(())
     }
 }
