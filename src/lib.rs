@@ -681,6 +681,26 @@ pub fn run(
             | wgpu::BufferUsages::MAP_READ,
     });
 
+    // collision buffer
+    let collision_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uwu buffer"),
+        mapped_at_creation: false,
+        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+        usage: wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::MAP_READ,
+    });
+    let collision_fetch_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uwu buffer"),
+        mapped_at_creation: false,
+        size: std::mem::size_of::<Animation>() as u64 * max_sprites as u64,
+        usage: wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::MAP_READ,
+    });
+
     // depth texture for transparency sorting
     let mut depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
