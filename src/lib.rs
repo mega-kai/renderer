@@ -695,28 +695,6 @@ pub fn run(
             | wgpu::BufferUsages::MAP_READ,
     });
 
-    // collision buffer todo
-    // let size_should_be =
-    //     (max_sprites as f32 / 32.0).ceil() as u64 * std::mem::size_of::<u32>() as u64;
-    let collision_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        mapped_at_creation: false,
-        // todo size is kinda janky rn
-        size: 1024,
-        usage: wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::STORAGE,
-    });
-    // let collision_swap_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-    //     label: None,
-    //     mapped_at_creation: false,
-    //     size: size_should_be,
-    //     usage: wgpu::BufferUsages::COPY_DST
-    //         | wgpu::BufferUsages::COPY_SRC
-    //         | wgpu::BufferUsages::STORAGE
-    //         | wgpu::BufferUsages::MAP_READ,
-    // });
-
     // depth texture for transparency sorting
     let mut depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -779,16 +757,6 @@ pub fn run(
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
         ],
     });
     let mut bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -833,14 +801,6 @@ pub fn run(
                         array_layer_count: None,
                     },
                 )),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &collision_buffer,
-                    offset: 0,
-                    size: None,
-                }),
             },
         ],
     });
@@ -1028,14 +988,6 @@ pub fn run(
                     0,
                     animation_buffer.size(),
                 );
-                // encoder.copy_buffer_to_buffer(
-                //     &collision_buffer,
-                //     0,
-                //     &collision_swap_buffer,
-                //     0,
-                //     collision_buffer.size(),
-                // );
-                // render
                 let canvas = surface.get_current_texture().unwrap();
                 let canvas_view = canvas
                     .texture
@@ -1076,9 +1028,6 @@ pub fn run(
 
                 // mapping the buffer, after waiting for it to map copy the content to the host side of the buffer, then finally unmap it
                 swap_buffer.slice(..).map_async(wgpu::MapMode::Read, |x| {});
-                // collision_swap_buffer
-                //     .slice(..)
-                //     .map_async(wgpu::MapMode::Read, |x| {});
                 device.poll(wgpu::MaintainBase::Wait);
                 let sprite_master = ecs.table.read_state::<SpriteMaster3000>().unwrap();
                 sprite_master
@@ -1086,13 +1035,7 @@ pub fn run(
                     .clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
                         &swap_buffer.slice(..).get_mapped_range()[..],
                     ));
-                // sprite_master
-                //     .collisions
-                //     .clone_from_slice(bytemuck::cast_slice::<u8, u32>(
-                //         &collision_swap_buffer.slice(..).get_mapped_range()[..],
-                //     ));
                 swap_buffer.unmap();
-                // collision_swap_buffer.unmap();
             }
             winit::event::Event::WindowEvent { event, .. } => match event {
                 winit::event::WindowEvent::Resized(new_size) => {
