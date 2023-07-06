@@ -4,7 +4,8 @@
     unused_variables,
     unused_mut,
     unused_assignments,
-    unreachable_code
+    unreachable_code,
+    unused_labels
 )]
 #![feature(path_file_prefix, alloc_layout_extra)]
 
@@ -14,6 +15,7 @@ use std::{
 };
 
 pub use ecs;
+use rayon::{prelude::IntoParallelRefMutIterator, slice::ParallelSliceMut};
 pub use winit;
 
 #[repr(C)]
@@ -49,6 +51,72 @@ struct TextureDescription {
     origin: u32,
     looping: u32,
     frames_per_sec: u32,
+}
+
+/// specify the depth as 0.5 to enable y sorting
+#[repr(C)]
+#[derive(Debug)]
+pub struct Sprite {
+    pub pos_x: f32,
+    pub pos_y: f32,
+
+    /// if you don't want repeating patterns don't touch this
+    pub width: f32,
+    pub height: f32,
+
+    tex_x: f32,
+    tex_y: f32,
+
+    tex_width: f32,
+    tex_height: f32,
+
+    pub depth: f32,
+    origin: f32,
+
+    frames: u32,
+
+    pub duration: f32,
+    pub paused: u32,
+    pub reversed: u32,
+    pub looping: u32,
+
+    pub transparency: f32,
+
+    anim_buffer_index: u32,
+
+    pub flipped_x: u32,
+    pub flipped_y: u32,
+}
+impl Sprite {
+    fn new_empty() -> Self {
+        Self {
+            pos_x: 0.0,
+            pos_y: 0.0,
+            width: 0.0,
+            height: 0.0,
+
+            tex_x: 0.0,
+            tex_y: 0.0,
+            tex_height: 0.0,
+            tex_width: 0.0,
+
+            depth: 0.0,
+            origin: 0.0,
+
+            duration: 1.0,
+            reversed: 0,
+            paused: 0,
+            frames: 0,
+            looping: 0,
+
+            transparency: 1.0,
+
+            anim_buffer_index: 0,
+
+            flipped_x: 0,
+            flipped_y: 0,
+        }
+    }
 }
 
 pub struct SpriteMaster3000<'this> {
@@ -88,7 +156,7 @@ impl<'this> SpriteMaster3000<'this> {
         }
     }
 
-    pub fn read_sprite<'a, 'b>(&self, sparse_index: usize) -> Result<&'b Sprite, &'static str> {
+    fn read_sprite<'a, 'b>(&self, sparse_index: usize) -> Result<&'b Sprite, &'static str> {
         Ok(self
             .table
             .read_single::<Sprite>(sparse_index)
@@ -270,68 +338,151 @@ impl<'this> SpriteMaster3000<'this> {
     }
 }
 
-/// specify the depth as 0.5 to enable y sorting
+// todo add more collision shapes
 #[repr(C)]
 #[derive(Debug)]
-pub struct Sprite {
+pub struct CollisionRect {
+    sparse_index: usize,
+
     pub pos_x: f32,
     pub pos_y: f32,
 
-    /// if you don't want repeating patterns don't touch this
     pub width: f32,
     pub height: f32,
-
-    tex_x: f32,
-    tex_y: f32,
-
-    tex_width: f32,
-    tex_height: f32,
-
-    pub depth: f32,
-    origin: f32,
-
-    frames: u32,
-
-    pub duration: f32,
-    pub paused: u32,
-    pub reversed: u32,
-    pub looping: u32,
-
-    pub transparency: f32,
-
-    anim_buffer_index: u32,
-
-    pub flipped_x: u32,
-    pub flipped_y: u32,
 }
-impl Sprite {
+impl CollisionRect {
     fn new_empty() -> Self {
         Self {
+            sparse_index: !0,
             pos_x: 0.0,
             pos_y: 0.0,
             width: 0.0,
             height: 0.0,
+        }
+    }
+}
 
-            tex_x: 0.0,
-            tex_y: 0.0,
-            tex_height: 0.0,
-            tex_width: 0.0,
+pub struct CollisionManager<'this> {
+    table: &'this mut ecs::Table,
 
-            depth: 0.0,
-            origin: 0.0,
+    pub x_sorted_list: Vec<CollisionRect>,
 
-            duration: 1.0,
-            reversed: 0,
-            paused: 0,
-            frames: 0,
-            looping: 0,
+    pub x_collided: Vec<(CollisionRect, CollisionRect)>,
 
-            transparency: 1.0,
+    // sorted with id
+    pub colliding_list: Vec<(usize, usize)>,
+}
+impl<'this> CollisionManager<'this> {
+    fn new(table: *mut ecs::Table) -> Self {
+        Self {
+            table: unsafe { table.as_mut().unwrap() },
+            x_sorted_list: vec![],
+            x_collided: vec![],
+            colliding_list: vec![],
+        }
+    }
 
-            anim_buffer_index: 0,
+    // so we use
+    pub fn check_if_colliding(&self, id_1: usize, id_2: usize) -> bool {
+        if self.colliding_list.binary_search(&(id_1, id_2)).is_ok()
+            || self.colliding_list.binary_search(&(id_2, id_1)).is_ok()
+        {
+            true
+        } else {
+            false
+        }
+    }
 
-            flipped_x: 0,
-            flipped_y: 0,
+    pub fn add_collision_rect(&mut self, pos: (f32, f32), size: (f32, f32)) -> usize {
+        // todo probably wanna binary search then insert to the place?
+        let collision_rect = CollisionRect {
+            sparse_index: 0,
+            pos_x: pos.0,
+            pos_y: pos.1,
+            width: size.0,
+            height: size.1,
+        };
+        let (index, shape) = self.table.insert_new(collision_rect);
+        shape.sparse_index = index;
+        index
+    }
+
+    pub fn insert_collision_rect(
+        &mut self,
+        sparse_index: usize,
+        pos: (f32, f32),
+        size: (f32, f32),
+    ) -> Result<(), &'static str> {
+        // todo probably wanna binary search then insert to the place?
+        let collision_rect = CollisionRect {
+            sparse_index,
+            pos_x: pos.0,
+            pos_y: pos.1,
+            width: size.0,
+            height: size.1,
+        };
+        self.table.insert_at(sparse_index, collision_rect)?;
+        Ok(())
+    }
+
+    /// basically if you update the position data of some rect, the collision result will be available at the next frame
+    fn update(&mut self, list_of_rects: &[CollisionRect]) {
+        unsafe {
+            self.x_collided.clear();
+            self.colliding_list.clear();
+            if self.x_sorted_list.capacity() < list_of_rects.len() {
+                self.x_sorted_list.reserve(list_of_rects.len());
+                self.x_sorted_list.set_len(list_of_rects.len());
+            }
+
+            std::ptr::copy(
+                list_of_rects.as_ptr(),
+                self.x_sorted_list.as_mut_ptr(),
+                list_of_rects.len(),
+            );
+            self.x_sorted_list[0..list_of_rects.len()]
+                .par_sort_unstable_by(|x, y| x.pos_x.total_cmp(&y.pos_x));
+
+            for current_index in 0..list_of_rects.len() {
+                for check_against in 1..list_of_rects.len() - current_index {
+                    let check_against_index = check_against + current_index;
+                    let mut current_rect_uninit: MaybeUninit<CollisionRect> = MaybeUninit::uninit();
+                    let mut check_against_rect_uninit: MaybeUninit<CollisionRect> =
+                        MaybeUninit::uninit();
+                    std::ptr::copy(
+                        &self.x_sorted_list[current_index],
+                        current_rect_uninit.as_mut_ptr(),
+                        1,
+                    );
+                    std::ptr::copy(
+                        &self.x_sorted_list[check_against_index],
+                        check_against_rect_uninit.as_mut_ptr(),
+                        1,
+                    );
+                    let current_rect = current_rect_uninit.assume_init();
+                    let check_against_rect = check_against_rect_uninit.assume_init();
+                    if current_rect.pos_x + current_rect.width >= check_against_rect.pos_x {
+                        self.x_collided.push((current_rect, check_against_rect));
+                    } else {
+                        // breaking the inner loop
+                        break;
+                    }
+                }
+            }
+            for (first_rect, second_rect) in &self.x_collided {
+                if ((first_rect.pos_y - first_rect.height <= second_rect.pos_y)
+                    && (first_rect.pos_y >= second_rect.pos_y))
+                    || ((second_rect.pos_y - second_rect.height <= first_rect.pos_y)
+                        && (second_rect.pos_y >= first_rect.pos_y))
+                {
+                    self.colliding_list
+                        .push((first_rect.sparse_index, second_rect.sparse_index));
+                }
+            }
+
+            // so that binary search would actually work
+            self.colliding_list
+                .par_sort_unstable_by(|x, y| x.0.cmp(&y.0));
         }
     }
 }
@@ -862,7 +1013,7 @@ pub fn run(
     let mut sorted_sprites: Vec<Sprite> = Vec::with_capacity(max_sprites as usize);
 
     // texture map data
-    let mut sprite_master = SpriteMaster3000::new(
+    let sprite_master = SpriteMaster3000::new(
         current_dir.clone(),
         max_sprites,
         &mut ecs.table,
@@ -871,10 +1022,13 @@ pub fn run(
         vec![Animation::new_empty(); max_sprites as usize],
     );
 
+    let collision_manager = CollisionManager::new(&mut ecs.table);
+
     // ecs prep work
     ecs.table.add_state(uniform_data).unwrap();
     ecs.table.add_state(RunningState::Running).unwrap();
     ecs.table.add_state(sprite_master).unwrap();
+    ecs.table.add_state(collision_manager).unwrap();
     ecs.table
         .add_state(MouseState {
             x: 0.0,
@@ -906,6 +1060,7 @@ pub fn run(
         .add_state::<Vec<winit::event::VirtualKeyCode>>(Vec::with_capacity(128))
         .unwrap();
     ecs.table.register_column::<Sprite>();
+    ecs.table.register_column::<CollisionRect>();
 
     // custom prep work done to ecs
     (prep_func)(&mut ecs.table);
@@ -933,6 +1088,13 @@ pub fn run(
                 uni.delta_time = uniform_data.delta_time;
                 uni.last_utime = uniform_data.last_utime;
 
+                // collision handling
+                let collision_rects = ecs.table.read_column::<CollisionRect>().unwrap();
+                ecs.table
+                    .read_state::<CollisionManager>()
+                    .unwrap()
+                    .update(collision_rects);
+
                 // ecs ticking
                 ecs.tick();
 
@@ -949,14 +1111,15 @@ pub fn run(
                 uniform_data.global_offset_x = uni.global_offset_x;
                 uniform_data.global_offset_y = uni.global_offset_y;
 
+                // depth sorting
                 let sprites = ecs.table.read_column::<Sprite>().unwrap();
                 unsafe {
                     sorted_sprites.set_len(sprites.len());
                     std::ptr::copy(sprites.as_ptr(), sorted_sprites.as_mut_ptr(), sprites.len());
                 };
 
-                // have to sort all sprites every frame tho
-                sorted_sprites[0..sprites.len()].sort_by(|x, y| {
+                // depth sort
+                sorted_sprites[0..sprites.len()].par_sort_unstable_by(|x, y| {
                     if x.depth == 0.5 && y.depth == 0.5 {
                         (y.pos_y - y.origin).total_cmp(&(x.pos_y - x.origin))
                     } else {
