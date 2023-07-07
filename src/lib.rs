@@ -382,7 +382,6 @@ impl<'this> CollisionManager<'this> {
         }
     }
 
-    // so we use
     pub fn check_if_colliding(&self, id_1: usize, id_2: usize) -> bool {
         if self.colliding_list.binary_search(&(id_1, id_2)).is_ok()
             || self.colliding_list.binary_search(&(id_2, id_1)).is_ok()
@@ -481,8 +480,7 @@ impl<'this> CollisionManager<'this> {
             }
 
             // so that binary search would actually work
-            self.colliding_list
-                .par_sort_unstable_by(|x, y| x.0.cmp(&y.0));
+            self.colliding_list.par_sort_unstable();
         }
     }
 }
