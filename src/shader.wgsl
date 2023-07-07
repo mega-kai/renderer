@@ -46,6 +46,8 @@ struct Animation {
     started: u32,
     cycles: u32,
     cycle_just_finished: u32,
+
+    depth: f32,
 }
 
 struct VertexOutput {
@@ -97,6 +99,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     } else {
         depth = 0.0;
     }
+
+    anim_storage_array[current_sprite.buffer_index].depth = depth;
 
     var out: VertexOutput;
     switch vertex_in_sprite_index {

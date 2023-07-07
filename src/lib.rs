@@ -27,6 +27,8 @@ pub struct Animation {
     started: u32,
     pub cycles: u32,
     pub cycle_just_finished: u32,
+
+    pub actual_depth: f32,
 }
 impl Animation {
     fn new_empty() -> Self {
@@ -37,6 +39,7 @@ impl Animation {
             started: 0,
             cycles: 0,
             cycle_just_finished: 0,
+            actual_depth: 0.0,
         }
     }
 }
@@ -70,7 +73,7 @@ pub struct Sprite {
     tex_width: f32,
     tex_height: f32,
 
-    pub depth: f32,
+    pub base_depth: f32,
     origin: f32,
 
     frames: u32,
@@ -100,7 +103,7 @@ impl Sprite {
             tex_height: 0.0,
             tex_width: 0.0,
 
-            depth: 0.0,
+            base_depth: 0.0,
             origin: 0.0,
 
             duration: 1.0,
@@ -119,17 +122,16 @@ impl Sprite {
     }
 }
 
+// todo add texture functionality
 pub struct SpriteMaster3000<'this> {
     map: std::collections::HashMap<String, TextureDescription>,
-    pub occupied_indices: Vec<bool>,
-    pub names: Vec<&'static str>,
-    pub anim_data: Vec<Animation>,
+    occupied_indices: Vec<bool>,
+    names: Vec<&'static str>,
+    anim_data: Vec<Animation>,
 
     table: &'this mut ecs::Table,
     queue: &'this wgpu::Queue,
     buffer: &'this wgpu::Buffer,
-    // todo buffer index based, bitset stored collision data
-    // collisions: Vec<u32>,
 }
 impl<'this> SpriteMaster3000<'this> {
     fn new(
@@ -217,7 +219,7 @@ impl<'this> SpriteMaster3000<'this> {
 
         self.set_anim_data(texture, &mut sprite)?;
 
-        sprite.depth = depth;
+        sprite.base_depth = depth;
         sprite.pos_x = pos.0;
         sprite.pos_y = pos.1;
 
@@ -239,7 +241,7 @@ impl<'this> SpriteMaster3000<'this> {
 
         self.set_anim_data(texture, &mut sprite)?;
 
-        sprite.depth = depth;
+        sprite.base_depth = depth;
         sprite.pos_x = pos.0;
         sprite.pos_y = pos.1;
 
@@ -287,6 +289,7 @@ impl<'this> SpriteMaster3000<'this> {
 
     fn free_index(&mut self, anim_buffer_index: u32) {
         let index_size = anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64;
+        // the problem is probably here, which is why it didn't
         self.queue.write_buffer(
             self.buffer,
             index_size,
@@ -338,7 +341,6 @@ impl<'this> SpriteMaster3000<'this> {
 }
 
 // todo add more collision shapes
-#[repr(C)]
 #[derive(Debug)]
 pub struct CollisionRect {
     sparse_index: usize,
@@ -348,6 +350,9 @@ pub struct CollisionRect {
 
     pub width: f32,
     pub height: f32,
+    pub actual_depth: f32,
+    pub fuzzy_range: f32,
+    pub channel: u32,
 }
 impl CollisionRect {
     fn new_empty() -> Self {
@@ -357,10 +362,13 @@ impl CollisionRect {
             pos_y: 0.0,
             width: 0.0,
             height: 0.0,
+            actual_depth: 0.0,
+            fuzzy_range: 0.0,
+            channel: 0,
         }
     }
 
-    pub fn sync_all(&mut self, sprite: &Sprite) {
+    pub fn sync_size_and_pos(&mut self, sprite: &Sprite) {
         self.pos_x = sprite.pos_x;
         self.pos_y = sprite.pos_y;
         self.width = sprite.width;
@@ -398,14 +406,23 @@ impl<'this> CollisionManager<'this> {
         }
     }
 
-    pub fn add_collision_rect(&mut self, pos: (f32, f32), size: (f32, f32)) -> usize {
-        // todo probably wanna binary search then insert to the place?
+    pub fn add_collision_rect(
+        &mut self,
+        pos: (f32, f32),
+        size: (f32, f32),
+        depth: f32,
+        fuzzy_range: f32,
+        channel: u32,
+    ) -> usize {
         let collision_rect = CollisionRect {
             sparse_index: 0,
             pos_x: pos.0,
             pos_y: pos.1,
             width: size.0,
             height: size.1,
+            actual_depth: depth,
+            fuzzy_range,
+            channel,
         };
         let (index, shape) = self.table.insert_new(collision_rect);
         shape.sparse_index = index;
@@ -417,14 +434,19 @@ impl<'this> CollisionManager<'this> {
         sparse_index: usize,
         pos: (f32, f32),
         size: (f32, f32),
+        depth: f32,
+        fuzzy_range: f32,
+        channel: u32,
     ) -> Result<(), &'static str> {
-        // todo probably wanna binary search then insert to the place?
         let collision_rect = CollisionRect {
             sparse_index,
             pos_x: pos.0,
             pos_y: pos.1,
             width: size.0,
             height: size.1,
+            actual_depth: depth,
+            fuzzy_range,
+            channel,
         };
         self.table.insert_at(sparse_index, collision_rect)?;
         Ok(())
@@ -475,11 +497,18 @@ impl<'this> CollisionManager<'this> {
                 }
             }
             for (first_rect, second_rect) in &self.x_collided {
-                if ((first_rect.pos_y - first_rect.height <= second_rect.pos_y)
-                    && (first_rect.pos_y >= second_rect.pos_y))
-                    || ((second_rect.pos_y - second_rect.height <= first_rect.pos_y)
-                        && (second_rect.pos_y >= first_rect.pos_y))
-                {
+                let y_check = (first_rect.pos_y - first_rect.height <= second_rect.pos_y
+                    && first_rect.pos_y >= second_rect.pos_y)
+                    || (second_rect.pos_y - second_rect.height <= first_rect.pos_y
+                        && second_rect.pos_y >= first_rect.pos_y);
+                let channel_check = first_rect.channel == second_rect.channel;
+                let depth_check = (first_rect.actual_depth <= second_rect.actual_depth
+                    && first_rect.actual_depth + first_rect.fuzzy_range
+                        >= second_rect.actual_depth)
+                    || (second_rect.actual_depth <= first_rect.actual_depth
+                        && second_rect.actual_depth + second_rect.fuzzy_range
+                            >= first_rect.actual_depth);
+                if y_check && channel_check && depth_check {
                     self.colliding_list
                         .push((first_rect.sparse_index, second_rect.sparse_index));
                 }
@@ -1099,40 +1128,19 @@ pub fn run(
                     .unwrap()
                     .update(collision_rects);
 
-                // ecs ticking
-                ecs.tick();
-
-                // after ticking we can adjust the last_utime
-                uniform_data.last_utime = uniform_data.utime;
-
-                // reset some states after ticking
-                ecs.table.read_state::<KeyState>().unwrap().reset();
-                ecs.table.read_state::<MouseState>().unwrap().reset();
-
-                // table uniform -> local uniform
-                let uni = ecs.table.read_state::<Uniform>().unwrap();
-                uniform_data.height_resolution = uni.height_resolution;
-                uniform_data.global_offset_x = uni.global_offset_x;
-                uniform_data.global_offset_y = uni.global_offset_y;
-
-                // depth sorting
+                // depth sorting before ticking to prevent the jankness of sometimes depth data goes to 0 for some reason
                 let sprites = ecs.table.read_column::<Sprite>().unwrap();
                 unsafe {
                     sorted_sprites.set_len(sprites.len());
                     std::ptr::copy(sprites.as_ptr(), sorted_sprites.as_mut_ptr(), sprites.len());
                 };
-
-                // depth sort
                 sorted_sprites[0..sprites.len()].par_sort_unstable_by(|x, y| {
-                    if x.depth == 0.5 && y.depth == 0.5 {
+                    if x.base_depth == 0.5 && y.base_depth == 0.5 {
                         (y.pos_y - y.origin).total_cmp(&(x.pos_y - x.origin))
                     } else {
-                        y.depth.total_cmp(&x.depth)
+                        y.base_depth.total_cmp(&x.base_depth)
                     }
                 });
-
-                // write buffers; local uniform -> shader uniform
-                queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
                 queue.write_buffer(
                     &sprite_buffer,
                     0,
@@ -1143,6 +1151,24 @@ pub fn run(
                         )
                     }),
                 );
+
+                // ecs ticking
+                ecs.tick();
+
+                // reset some states after ticking
+                ecs.table.read_state::<KeyState>().unwrap().reset();
+                ecs.table.read_state::<MouseState>().unwrap().reset();
+
+                // uniform stuff
+                // after ticking we can adjust the last_utime
+                uniform_data.last_utime = uniform_data.utime;
+                // table uniform -> local uniform
+                let uni = ecs.table.read_state::<Uniform>().unwrap();
+                uniform_data.height_resolution = uni.height_resolution;
+                uniform_data.global_offset_x = uni.global_offset_x;
+                uniform_data.global_offset_y = uni.global_offset_y;
+                // write uniform buffer
+                queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
 
                 // create encoder
                 let mut encoder =
@@ -1196,8 +1222,9 @@ pub fn run(
                 // mapping the buffer, after waiting for it to map copy the content to the host side of the buffer, then finally unmap it
                 swap_buffer.slice(..).map_async(wgpu::MapMode::Read, |x| {});
                 device.poll(wgpu::MaintainBase::Wait);
-                let sprite_master = ecs.table.read_state::<SpriteMaster3000>().unwrap();
-                sprite_master
+                ecs.table
+                    .read_state::<SpriteMaster3000>()
+                    .unwrap()
                     .anim_data
                     .clone_from_slice(bytemuck::cast_slice::<u8, Animation>(
                         &swap_buffer.slice(..).get_mapped_range()[..],
