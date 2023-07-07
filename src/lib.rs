@@ -307,7 +307,6 @@ impl<'this> SpriteMaster3000<'this> {
         &mut self,
         sparse_index: usize,
         texture: &'static str,
-        cut_or_queue: bool,
     ) -> Result<(), &'static str> {
         let tex_data = *self.map.get(texture).ok_or("wrong texture name")?;
         let sprite = self
@@ -359,6 +358,13 @@ impl CollisionRect {
             width: 0.0,
             height: 0.0,
         }
+    }
+
+    pub fn sync_all(&mut self, sprite: &Sprite) {
+        self.pos_x = sprite.pos_x;
+        self.pos_y = sprite.pos_y;
+        self.width = sprite.width;
+        self.height = sprite.height;
     }
 }
 
