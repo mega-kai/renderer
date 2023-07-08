@@ -21,10 +21,10 @@ pub use winit;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Animation {
-    counter: f32,
+    pub counter: f32,
     pub current_frame: u32,
     pub loop_paused: u32,
-    started: u32,
+    pub started: u32,
     pub cycles: u32,
     pub cycle_just_finished: u32,
 
@@ -995,7 +995,7 @@ pub fn run(
     // render pipeline
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
-        // you can have more bind group, maybe that is how you switch out the buffers in the bind group
+        // you can have more bind groups, maybe that is how you switch out the buffers
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
     });
@@ -1039,7 +1039,7 @@ pub fn run(
         multiview: None,
     });
 
-    // ecs and the important states
+    // ecs
     let mut ecs = ecs::ECS::new(entry_point);
 
     // all the sprites, which is sortet then submitted to the storage buffer
@@ -1127,8 +1127,10 @@ pub fn run(
                     .read_state::<CollisionManager>()
                     .unwrap()
                     .update(collision_rects);
+                drop(collision_rects);
 
-                // depth sorting before ticking to prevent the jankness of sometimes depth data goes to 0 for some reason
+                // depth sorting before ticking to prevent jankness since changing animation state has weirdness on the data flowing back from gpu
+                // note that this slice ma
                 let sprites = ecs.table.read_column::<Sprite>().unwrap();
                 unsafe {
                     sorted_sprites.set_len(sprites.len());
@@ -1151,6 +1153,7 @@ pub fn run(
                         )
                     }),
                 );
+                drop(sprites);
 
                 // ecs ticking
                 ecs.tick();
@@ -1212,7 +1215,7 @@ pub fn run(
                 });
                 render_pass.set_pipeline(&pipeline);
                 render_pass.set_bind_group(0, &bind_group, &[]);
-                render_pass.draw(0..sprites.len() as u32 * 6, 0..1);
+                render_pass.draw(0..sorted_sprites.len() as u32 * 6, 0..1);
                 drop(render_pass);
                 // submit all the changes in this frame
                 queue.submit(Some(encoder.finish()));
@@ -1231,116 +1234,121 @@ pub fn run(
                     ));
                 swap_buffer.unmap();
             }
-            winit::event::Event::WindowEvent { event, .. } => match event {
-                winit::event::WindowEvent::Resized(new_size) => {
-                    surface_config.height = new_size.height;
-                    surface_config.width = new_size.width;
-                    surface.configure(&device, &surface_config);
-                    depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-                        label: None,
-                        size: wgpu::Extent3d {
-                            width: new_size.width,
-                            height: new_size.height,
-                            depth_or_array_layers: 1,
+            winit::event::Event::WindowEvent { event, window_id } => {
+                if window_id == window.id() {
+                    match event {
+                        winit::event::WindowEvent::Resized(new_size) => {
+                            surface_config.height = new_size.height;
+                            surface_config.width = new_size.width;
+                            surface.configure(&device, &surface_config);
+                            depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+                                label: None,
+                                size: wgpu::Extent3d {
+                                    width: new_size.width,
+                                    height: new_size.height,
+                                    depth_or_array_layers: 1,
+                                },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::Depth32Float,
+                                usage: wgpu::TextureUsages::COPY_DST
+                                    | wgpu::TextureUsages::COPY_SRC
+                                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                view_formats: &[],
+                            });
+                            uniform_data.window_width = new_size.width as f32;
+                            uniform_data.window_height = new_size.height as f32;
+                            window.request_redraw();
+                        }
+                        winit::event::WindowEvent::CloseRequested => {
+                            control_flow.set_exit();
+                        }
+
+                        winit::event::WindowEvent::KeyboardInput { input, .. } => {
+                            let key_state = ecs.table.read_state::<KeyState>().unwrap();
+                            if let Some(code) = input.virtual_keycode {
+                                match input.state {
+                                    winit::event::ElementState::Pressed => key_state.press(code),
+                                    winit::event::ElementState::Released => key_state.release(code),
+                                }
+                            }
+                        }
+
+                        winit::event::WindowEvent::MouseWheel { delta, .. } => match delta {
+                            winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                                ecs.table.read_state::<MouseState>().unwrap().wheel_delta = y;
+                            }
+                            winit::event::MouseScrollDelta::PixelDelta(_) => {}
                         },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Depth32Float,
-                        usage: wgpu::TextureUsages::COPY_DST
-                            | wgpu::TextureUsages::COPY_SRC
-                            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                        view_formats: &[],
-                    });
-                    uniform_data.window_width = new_size.width as f32;
-                    uniform_data.window_height = new_size.height as f32;
-                    window.request_redraw();
-                }
-                winit::event::WindowEvent::CloseRequested => {
-                    control_flow.set_exit();
-                }
 
-                winit::event::WindowEvent::KeyboardInput { input, .. } => {
-                    let key_state = ecs.table.read_state::<KeyState>().unwrap();
-                    if let Some(code) = input.virtual_keycode {
-                        match input.state {
-                            winit::event::ElementState::Pressed => key_state.press(code),
-                            winit::event::ElementState::Released => key_state.release(code),
+                        winit::event::WindowEvent::CursorEntered { .. } => {
+                            ecs.table.read_state::<MouseState>().unwrap().just_entered = true;
                         }
+                        winit::event::WindowEvent::CursorLeft { .. } => {
+                            ecs.table.read_state::<MouseState>().unwrap().just_left = true;
+                        }
+
+                        winit::event::WindowEvent::ModifiersChanged(mod_state) => {
+                            *ecs.table
+                                .read_state::<winit::event::ModifiersState>()
+                                .unwrap() = mod_state;
+                        }
+
+                        winit::event::WindowEvent::CursorMoved { position, .. } => {
+                            ecs.table.read_state::<MouseState>().unwrap().x = position.x as f32;
+                            ecs.table.read_state::<MouseState>().unwrap().y = position.y as f32;
+                        }
+                        winit::event::WindowEvent::MouseInput { state, button, .. } => match button
+                        {
+                            winit::event::MouseButton::Left => match state {
+                                winit::event::ElementState::Pressed => {
+                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    mouse_state.left = true;
+                                    mouse_state.left_clicked = true;
+                                    mouse_state.left_released = false;
+                                }
+                                winit::event::ElementState::Released => {
+                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    mouse_state.left = false;
+                                    mouse_state.left_released = true;
+                                    mouse_state.left_clicked = false;
+                                }
+                            },
+                            winit::event::MouseButton::Middle => match state {
+                                winit::event::ElementState::Pressed => {
+                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    mouse_state.middle = true;
+                                    mouse_state.middle_clicked = true;
+                                    mouse_state.middle_released = false;
+                                }
+                                winit::event::ElementState::Released => {
+                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    mouse_state.middle = false;
+                                    mouse_state.middle_released = true;
+                                    mouse_state.middle_clicked = false;
+                                }
+                            },
+                            winit::event::MouseButton::Right => match state {
+                                winit::event::ElementState::Pressed => {
+                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    mouse_state.right = true;
+                                    mouse_state.right_clicked = true;
+                                    mouse_state.right_released = false;
+                                }
+                                winit::event::ElementState::Released => {
+                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    mouse_state.right = false;
+                                    mouse_state.right_released = true;
+                                    mouse_state.right_clicked = false;
+                                }
+                            },
+                            _ => {}
+                        },
+                        _ => (),
                     }
                 }
-
-                winit::event::WindowEvent::MouseWheel { delta, .. } => match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
-                        ecs.table.read_state::<MouseState>().unwrap().wheel_delta = y;
-                    }
-                    winit::event::MouseScrollDelta::PixelDelta(_) => {}
-                },
-
-                winit::event::WindowEvent::CursorEntered { .. } => {
-                    ecs.table.read_state::<MouseState>().unwrap().just_entered = true;
-                }
-                winit::event::WindowEvent::CursorLeft { .. } => {
-                    ecs.table.read_state::<MouseState>().unwrap().just_left = true;
-                }
-
-                winit::event::WindowEvent::ModifiersChanged(mod_state) => {
-                    *ecs.table
-                        .read_state::<winit::event::ModifiersState>()
-                        .unwrap() = mod_state;
-                }
-
-                winit::event::WindowEvent::CursorMoved { position, .. } => {
-                    ecs.table.read_state::<MouseState>().unwrap().x = position.x as f32;
-                    ecs.table.read_state::<MouseState>().unwrap().y = position.y as f32;
-                }
-                winit::event::WindowEvent::MouseInput { state, button, .. } => match button {
-                    winit::event::MouseButton::Left => match state {
-                        winit::event::ElementState::Pressed => {
-                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
-                            mouse_state.left = true;
-                            mouse_state.left_clicked = true;
-                            mouse_state.left_released = false;
-                        }
-                        winit::event::ElementState::Released => {
-                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
-                            mouse_state.left = false;
-                            mouse_state.left_released = true;
-                            mouse_state.left_clicked = false;
-                        }
-                    },
-                    winit::event::MouseButton::Middle => match state {
-                        winit::event::ElementState::Pressed => {
-                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
-                            mouse_state.middle = true;
-                            mouse_state.middle_clicked = true;
-                            mouse_state.middle_released = false;
-                        }
-                        winit::event::ElementState::Released => {
-                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
-                            mouse_state.middle = false;
-                            mouse_state.middle_released = true;
-                            mouse_state.middle_clicked = false;
-                        }
-                    },
-                    winit::event::MouseButton::Right => match state {
-                        winit::event::ElementState::Pressed => {
-                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
-                            mouse_state.right = true;
-                            mouse_state.right_clicked = true;
-                            mouse_state.right_released = false;
-                        }
-                        winit::event::ElementState::Released => {
-                            let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
-                            mouse_state.right = false;
-                            mouse_state.right_released = true;
-                            mouse_state.right_clicked = false;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => (),
-            },
+            }
             _ => (),
         }
     })
