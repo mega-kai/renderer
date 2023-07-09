@@ -10,6 +10,7 @@
 #![feature(path_file_prefix, alloc_layout_extra)]
 
 use std::{
+    cmp::Ordering,
     mem::{size_of, MaybeUninit},
     slice::from_raw_parts,
 };
@@ -158,11 +159,8 @@ impl<'this> SpriteMaster3000<'this> {
         }
     }
 
-    fn read_sprite<'a, 'b>(&self, sparse_index: usize) -> Result<&'b Sprite, &'static str> {
-        Ok(self
-            .table
-            .read_single::<Sprite>(sparse_index)
-            .ok_or("invalid index")?)
+    fn read_sprite(&self, sparse_index: usize) -> Result<ecs::Access<Sprite>, &'static str> {
+        Ok(self.table.read::<Sprite>(sparse_index)?)
     }
 
     pub fn read_anim_data(&self, sparse_index: usize) -> Result<Animation, &'static str> {
@@ -205,12 +203,12 @@ impl<'this> SpriteMaster3000<'this> {
         Ok(())
     }
 
-    pub fn add_sprite<'a, 'b>(
-        &'a mut self,
+    pub fn add_sprite(
+        &mut self,
         texture: &'static str,
         pos: (f32, f32),
         depth: f32,
-    ) -> Result<(usize, &'b mut Sprite), &'static str> {
+    ) -> Result<ecs::Access<Sprite>, &'static str> {
         let mut buffer_index = self.request_index();
         let mut sprite = Sprite::new_empty();
 
@@ -226,13 +224,13 @@ impl<'this> SpriteMaster3000<'this> {
         Ok(self.table.insert_new(sprite))
     }
 
-    pub fn insert_sprite<'a, 'b>(
-        &'a mut self,
+    pub fn insert_sprite(
+        &mut self,
         sparse_index: usize,
         texture: &'static str,
         pos: (f32, f32),
         depth: f32,
-    ) -> Result<&'b mut Sprite, &'static str> {
+    ) -> Result<ecs::Access<Sprite>, &'static str> {
         let mut buffer_index = self.request_index();
 
         let mut sprite = Sprite::new_empty();
@@ -254,10 +252,7 @@ impl<'this> SpriteMaster3000<'this> {
         requested_index: u32,
     ) -> Result<Sprite, &'static str> {
         unsafe {
-            let sprite_clone = self
-                .table
-                .read_single::<Sprite>(index_to_clone)
-                .ok_or("index not valid")?;
+            let sprite_clone = &mut *self.table.read::<Sprite>(index_to_clone)?;
             let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
             std::ptr::copy(sprite_clone, uninit_sprite.as_mut_ptr(), 1);
             let mut sprite = uninit_sprite.assume_init();
@@ -268,20 +263,20 @@ impl<'this> SpriteMaster3000<'this> {
         }
     }
 
-    pub fn clone_insert<'a, 'b>(
-        &'a mut self,
+    pub fn clone_insert(
+        &mut self,
         index_to_clone: usize,
         index_to_insert: usize,
-    ) -> Result<&'b mut Sprite, &'static str> {
+    ) -> Result<ecs::Access<Sprite>, &'static str> {
         let mut buffer_index = self.request_index();
         let mut sprite = self.copy_sprite(index_to_clone, buffer_index)?;
         Ok(self.table.insert_at(index_to_insert, sprite)?)
     }
 
-    pub fn clone_add<'a, 'b>(
-        &'a mut self,
+    pub fn clone_add(
+        &mut self,
         index_to_clone: usize,
-    ) -> Result<(usize, &'b mut Sprite), &'static str> {
+    ) -> Result<ecs::Access<Sprite>, &'static str> {
         let mut buffer_index = self.request_index();
         let mut sprite = self.copy_sprite(index_to_clone, buffer_index)?;
         Ok(self.table.insert_new(sprite))
@@ -289,7 +284,6 @@ impl<'this> SpriteMaster3000<'this> {
 
     fn free_index(&mut self, anim_buffer_index: u32) {
         let index_size = anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64;
-        // the problem is probably here, which is why it didn't
         self.queue.write_buffer(
             self.buffer,
             index_size,
@@ -300,8 +294,11 @@ impl<'this> SpriteMaster3000<'this> {
         self.names[anim_buffer_index as usize] = "";
     }
 
-    pub fn remove_sprite(&mut self, sparse_index: usize) -> Result<(), &'static str> {
-        let sprite = self.table.remove::<Sprite>(sparse_index)?;
+    pub fn remove_sprite(
+        &mut self,
+        sprite_access: ecs::Access<Sprite>,
+    ) -> Result<(), &'static str> {
+        let sprite = self.table.remove::<Sprite>(sprite_access)?;
         self.free_index(sprite.anim_buffer_index);
         Ok(())
     }
@@ -311,11 +308,9 @@ impl<'this> SpriteMaster3000<'this> {
         sparse_index: usize,
         texture: &'static str,
     ) -> Result<(), &'static str> {
+        let mut buffer_index = self.request_index();
         let tex_data = *self.map.get(texture).ok_or("wrong texture name")?;
-        let sprite = self
-            .table
-            .read_single::<Sprite>(sparse_index)
-            .ok_or("invalid index")?;
+        let sprite = &mut *self.table.read::<Sprite>(sparse_index)?;
 
         if tex_data.tex_x as f32 == sprite.tex_x
             && tex_data.tex_y as f32 == sprite.tex_y
@@ -324,19 +319,41 @@ impl<'this> SpriteMaster3000<'this> {
             && tex_data.tex_width as f32 == sprite.tex_width
         {
             return Ok(());
+        } else {
+            // self.set_anim_data(texture, sprite)?;
+            {
+                sprite.tex_x = tex_data.tex_x as f32;
+                sprite.tex_y = tex_data.tex_y as f32;
+                sprite.tex_width = tex_data.tex_width as f32;
+                sprite.tex_height = tex_data.tex_height as f32;
+                sprite.width = tex_data.tex_width as f32;
+                sprite.height = tex_data.tex_height as f32;
+                sprite.frames = tex_data.frames;
+                sprite.looping = tex_data.looping;
+                sprite.duration = 1.0 / tex_data.frames_per_sec.max(1) as f32;
+            }
+
+            // self.free_index(sprite.anim_buffer_index);
+
+            {
+                let index_size =
+                    sprite.anim_buffer_index as u64 * std::mem::size_of::<Animation>() as u64;
+                self.queue.write_buffer(
+                    self.buffer,
+                    index_size,
+                    bytemuck::cast_slice(&[Animation::new_empty()]),
+                );
+
+                self.occupied_indices[sprite.anim_buffer_index as usize] = false;
+                self.names[sprite.anim_buffer_index as usize] = "";
+            }
+
+            self.names[sprite.anim_buffer_index as usize] = "";
+            self.names[buffer_index as usize] = texture;
+
+            sprite.anim_buffer_index = buffer_index;
+            Ok(())
         }
-
-        let mut buffer_index = self.request_index();
-
-        self.set_anim_data(texture, sprite)?;
-
-        self.free_index(sprite.anim_buffer_index);
-
-        self.names[sprite.anim_buffer_index as usize] = "";
-        self.names[buffer_index as usize] = texture;
-
-        sprite.anim_buffer_index = buffer_index;
-        Ok(())
     }
 }
 
@@ -413,7 +430,7 @@ impl<'this> CollisionManager<'this> {
         depth: f32,
         fuzzy_range: f32,
         channel: u32,
-    ) -> usize {
+    ) -> ecs::Access<CollisionRect> {
         let collision_rect = CollisionRect {
             sparse_index: 0,
             pos_x: pos.0,
@@ -424,9 +441,11 @@ impl<'this> CollisionManager<'this> {
             fuzzy_range,
             channel,
         };
-        let (index, shape) = self.table.insert_new(collision_rect);
-        shape.sparse_index = index;
-        index
+        // let (index, shape) = self.table.insert_new(collision_rect);
+        // shape.sparse_index = index;
+        let mut rect = self.table.insert_new(collision_rect);
+        (*rect).sparse_index = rect.get_sparse_index().unwrap();
+        rect
     }
 
     pub fn insert_collision_rect(
@@ -437,7 +456,7 @@ impl<'this> CollisionManager<'this> {
         depth: f32,
         fuzzy_range: f32,
         channel: u32,
-    ) -> Result<(), &'static str> {
+    ) -> Result<ecs::Access<CollisionRect>, &'static str> {
         let collision_rect = CollisionRect {
             sparse_index,
             pos_x: pos.0,
@@ -448,15 +467,18 @@ impl<'this> CollisionManager<'this> {
             fuzzy_range,
             channel,
         };
-        self.table.insert_at(sparse_index, collision_rect)?;
-        Ok(())
+
+        Ok(self.table.insert_at(sparse_index, collision_rect)?)
     }
 
     /// basically if you update the position data of some rect, the collision result will be available at the next frame
-    fn update(&mut self, list_of_rects: &[CollisionRect]) {
+    fn update(&mut self) {
         unsafe {
             self.x_collided.clear();
             self.colliding_list.clear();
+
+            let list_of_rects = self.table.read_column::<CollisionRect>().unwrap();
+
             if self.x_sorted_list.capacity() < list_of_rects.len() {
                 self.x_sorted_list.reserve(list_of_rects.len());
                 self.x_sorted_list.set_len(list_of_rects.len());
@@ -646,12 +668,12 @@ impl MouseState {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum KeyEvent {
-    Pressed(winit::event::VirtualKeyCode),
-    Released(winit::event::VirtualKeyCode),
+    Pressed(winit::keyboard::KeyCode),
+    Released(winit::keyboard::KeyCode),
 }
 
 pub struct KeyState {
-    pressed: [Option<winit::event::VirtualKeyCode>; 32],
+    pub pressed: [Option<winit::keyboard::KeyCode>; 32],
     events: [Option<KeyEvent>; 32],
 }
 impl KeyState {
@@ -664,11 +686,19 @@ impl KeyState {
 
     /// reset after each tick
     fn reset(&mut self) {
-        self.pressed.sort_unstable_by(|x, y| y.cmp(x));
+        self.pressed.sort_unstable_by(|x, y| {
+            if x.is_some() && y.is_none() {
+                Ordering::Less
+            } else if x.is_none() && y.is_some() {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        });
         self.events = [None; 32];
     }
 
-    fn press(&mut self, code: winit::event::VirtualKeyCode) {
+    fn press(&mut self, code: winit::keyboard::KeyCode) {
         if !self.pressed.contains(&Some(code)) {
             for each in self.pressed.iter_mut() {
                 if each == &None {
@@ -687,7 +717,7 @@ impl KeyState {
         }
     }
 
-    fn release(&mut self, code: winit::event::VirtualKeyCode) {
+    fn release(&mut self, code: winit::keyboard::KeyCode) {
         let mut index_to_remove = None::<usize>;
         for (index, each) in self.pressed.iter().enumerate() {
             if each == &Some(code) {
@@ -708,11 +738,11 @@ impl KeyState {
         }
     }
 
-    pub fn is_pressed(&self, code: winit::event::VirtualKeyCode) -> bool {
+    pub fn is_pressed(&self, code: winit::keyboard::KeyCode) -> bool {
         self.pressed.contains(&Some(code))
     }
 
-    pub fn just_clicked(&self, key: winit::event::VirtualKeyCode) -> bool {
+    pub fn just_clicked(&self, key: winit::keyboard::KeyCode) -> bool {
         for each in 0..self.events.len() {
             if self.events[each] == Some(KeyEvent::Pressed(key)) {
                 return true;
@@ -721,7 +751,7 @@ impl KeyState {
         false
     }
 
-    pub fn just_released(&self, key: winit::event::VirtualKeyCode) -> bool {
+    pub fn just_released(&self, key: winit::keyboard::KeyCode) -> bool {
         for each in 0..self.events.len() {
             if self.events[each] == Some(KeyEvent::Released(key)) {
                 return true;
@@ -1086,12 +1116,9 @@ pub fn run(
         })
         .unwrap();
     ecs.table
-        .add_state(winit::event::ModifiersState::empty())
+        .add_state(winit::keyboard::ModifiersState::empty())
         .unwrap();
     ecs.table.add_state(KeyState::new()).unwrap();
-    ecs.table
-        .add_state::<Vec<winit::event::VirtualKeyCode>>(Vec::with_capacity(128))
-        .unwrap();
     ecs.table.register_column::<Sprite>();
     ecs.table.register_column::<CollisionRect>();
 
@@ -1099,7 +1126,7 @@ pub fn run(
     (prep_func)(&mut ecs.table);
 
     event_loop.run(move |event, _, control_flow| {
-        match ecs.table.read_state::<RunningState>().unwrap() {
+        match *ecs.table.read_state::<RunningState>().unwrap() {
             RunningState::Running => control_flow.set_poll(),
             RunningState::Closed => {
                 control_flow.set_exit();
@@ -1114,7 +1141,7 @@ pub fn run(
                 // local uniform -> table uniform
                 uniform_data.utime = start_time.elapsed().as_secs_f32();
                 uniform_data.delta_time = uniform_data.utime - uniform_data.last_utime;
-                let uni = ecs.table.read_state::<Uniform>().unwrap();
+                let uni = &mut *ecs.table.read_state::<Uniform>().unwrap();
                 uni.utime = uniform_data.utime;
                 uni.window_width = uniform_data.window_width;
                 uni.window_height = uniform_data.window_height;
@@ -1122,16 +1149,13 @@ pub fn run(
                 uni.last_utime = uniform_data.last_utime;
 
                 // collision handling
-                let collision_rects = ecs.table.read_column::<CollisionRect>().unwrap();
-                ecs.table
-                    .read_state::<CollisionManager>()
-                    .unwrap()
-                    .update(collision_rects);
-                drop(collision_rects);
+                // let collision_rects = ecs.table.read_column::<CollisionRect>().unwrap();
+                ecs.table.read_state::<CollisionManager>().unwrap().update();
+                // drop(collision_rects);
 
                 // depth sorting before ticking to prevent jankness since changing animation state has weirdness on the data flowing back from gpu
                 // note that this slice ma
-                let sprites = ecs.table.read_column::<Sprite>().unwrap();
+                let sprites = unsafe { ecs.table.read_column::<Sprite>().unwrap() };
                 unsafe {
                     sorted_sprites.set_len(sprites.len());
                     std::ptr::copy(sprites.as_ptr(), sorted_sprites.as_mut_ptr(), sprites.len());
@@ -1265,12 +1289,16 @@ pub fn run(
                             control_flow.set_exit();
                         }
 
-                        winit::event::WindowEvent::KeyboardInput { input, .. } => {
-                            let key_state = ecs.table.read_state::<KeyState>().unwrap();
-                            if let Some(code) = input.virtual_keycode {
-                                match input.state {
-                                    winit::event::ElementState::Pressed => key_state.press(code),
-                                    winit::event::ElementState::Released => key_state.release(code),
+                        winit::event::WindowEvent::KeyboardInput {
+                            event: key_event, ..
+                        } => {
+                            let key_state = &mut *ecs.table.read_state::<KeyState>().unwrap();
+                            match &key_event.state {
+                                winit::event::ElementState::Pressed => {
+                                    key_state.press(key_event.physical_key);
+                                }
+                                winit::event::ElementState::Released => {
+                                    key_state.release(key_event.physical_key);
                                 }
                             }
                         }
@@ -1291,8 +1319,8 @@ pub fn run(
 
                         winit::event::WindowEvent::ModifiersChanged(mod_state) => {
                             *ecs.table
-                                .read_state::<winit::event::ModifiersState>()
-                                .unwrap() = mod_state;
+                                .read_state::<winit::keyboard::ModifiersState>()
+                                .unwrap() = mod_state.state();
                         }
 
                         winit::event::WindowEvent::CursorMoved { position, .. } => {
@@ -1303,13 +1331,15 @@ pub fn run(
                         {
                             winit::event::MouseButton::Left => match state {
                                 winit::event::ElementState::Pressed => {
-                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    let mouse_state =
+                                        &mut *ecs.table.read_state::<MouseState>().unwrap();
                                     mouse_state.left = true;
                                     mouse_state.left_clicked = true;
                                     mouse_state.left_released = false;
                                 }
                                 winit::event::ElementState::Released => {
-                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    let mouse_state =
+                                        &mut *ecs.table.read_state::<MouseState>().unwrap();
                                     mouse_state.left = false;
                                     mouse_state.left_released = true;
                                     mouse_state.left_clicked = false;
@@ -1317,13 +1347,15 @@ pub fn run(
                             },
                             winit::event::MouseButton::Middle => match state {
                                 winit::event::ElementState::Pressed => {
-                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    let mouse_state =
+                                        &mut *ecs.table.read_state::<MouseState>().unwrap();
                                     mouse_state.middle = true;
                                     mouse_state.middle_clicked = true;
                                     mouse_state.middle_released = false;
                                 }
                                 winit::event::ElementState::Released => {
-                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    let mouse_state =
+                                        &mut *ecs.table.read_state::<MouseState>().unwrap();
                                     mouse_state.middle = false;
                                     mouse_state.middle_released = true;
                                     mouse_state.middle_clicked = false;
@@ -1331,13 +1363,15 @@ pub fn run(
                             },
                             winit::event::MouseButton::Right => match state {
                                 winit::event::ElementState::Pressed => {
-                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    let mouse_state =
+                                        &mut *ecs.table.read_state::<MouseState>().unwrap();
                                     mouse_state.right = true;
                                     mouse_state.right_clicked = true;
                                     mouse_state.right_released = false;
                                 }
                                 winit::event::ElementState::Released => {
-                                    let mouse_state = ecs.table.read_state::<MouseState>().unwrap();
+                                    let mouse_state =
+                                        &mut *ecs.table.read_state::<MouseState>().unwrap();
                                     mouse_state.right = false;
                                     mouse_state.right_released = true;
                                     mouse_state.right_clicked = false;
