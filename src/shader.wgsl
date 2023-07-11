@@ -139,6 +139,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         }
     }
 
+    // conditionals may very well causing the gpu to branch, might wanna do something about this
     let counter = &anim_storage_array[current_sprite.buffer_index].counter;
     let current_frame = &anim_storage_array[current_sprite.buffer_index].current_frame;
     let cycle_just_finished = &anim_storage_array[current_sprite.buffer_index].cycle_just_finished;
@@ -226,6 +227,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var frame_x = i32(in.frame_offset_x);
     var frame_y = 0;
 
+    // should probably completely avoid conditionals in fragment shaders
+    // diffirent branching on different invocations may cause problems
     if in.flipped_x != 0u {
         repeated_unit_x = in.tex_width - 1 - repeated_unit_x;
     }

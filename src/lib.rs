@@ -16,6 +16,7 @@ use std::{
 };
 
 pub use ecs;
+use ecs::Access;
 use rayon::{prelude::IntoParallelRefMutIterator, slice::ParallelSliceMut};
 pub use winit;
 
@@ -123,7 +124,6 @@ impl Sprite {
     }
 }
 
-// todo add texture functionality
 pub struct SpriteMaster3000<'this> {
     map: std::collections::HashMap<String, TextureDescription>,
     occupied_indices: Vec<bool>,
@@ -159,18 +159,12 @@ impl<'this> SpriteMaster3000<'this> {
         }
     }
 
-    fn read_sprite(&self, sparse_index: usize) -> Result<ecs::Access<Sprite>, &'static str> {
-        Ok(self.table.read::<Sprite>(sparse_index)?)
+    pub fn read_anim_data(&self, access: &Access<Sprite>) -> Result<Animation, &'static str> {
+        Ok(self.anim_data[access.anim_buffer_index as usize])
     }
 
-    pub fn read_anim_data(&self, sparse_index: usize) -> Result<Animation, &'static str> {
-        let sprite = self.read_sprite(sparse_index)?;
-        Ok(self.anim_data[sprite.anim_buffer_index as usize])
-    }
-
-    pub fn get_name(&self, sparse_index: usize) -> Result<&'static str, &'static str> {
-        let sprite = self.read_sprite(sparse_index)?;
-        Ok(self.names[sprite.anim_buffer_index as usize])
+    pub fn get_name(&self, access: &Access<Sprite>) -> Result<&'static str, &'static str> {
+        Ok(self.names[access.anim_buffer_index as usize])
     }
 
     fn request_index(&mut self) -> u32 {
@@ -248,11 +242,11 @@ impl<'this> SpriteMaster3000<'this> {
 
     fn copy_sprite(
         &mut self,
-        index_to_clone: usize,
+        access_to_clone: &Access<Sprite>,
         requested_index: u32,
     ) -> Result<Sprite, &'static str> {
         unsafe {
-            let sprite_clone = &mut *self.table.read::<Sprite>(index_to_clone)?;
+            let sprite_clone = &**access_to_clone;
             let mut uninit_sprite: MaybeUninit<Sprite> = MaybeUninit::uninit();
             std::ptr::copy(sprite_clone, uninit_sprite.as_mut_ptr(), 1);
             let mut sprite = uninit_sprite.assume_init();
@@ -265,20 +259,20 @@ impl<'this> SpriteMaster3000<'this> {
 
     pub fn clone_insert(
         &mut self,
-        index_to_clone: usize,
+        access_to_clone: &Access<Sprite>,
         index_to_insert: usize,
     ) -> Result<ecs::Access<Sprite>, &'static str> {
         let mut buffer_index = self.request_index();
-        let mut sprite = self.copy_sprite(index_to_clone, buffer_index)?;
+        let mut sprite = self.copy_sprite(access_to_clone, buffer_index)?;
         Ok(self.table.insert_at(index_to_insert, sprite)?)
     }
 
     pub fn clone_add(
         &mut self,
-        index_to_clone: usize,
+        access_to_clone: &Access<Sprite>,
     ) -> Result<ecs::Access<Sprite>, &'static str> {
         let mut buffer_index = self.request_index();
-        let mut sprite = self.copy_sprite(index_to_clone, buffer_index)?;
+        let mut sprite = self.copy_sprite(access_to_clone, buffer_index)?;
         Ok(self.table.insert_new(sprite))
     }
 
@@ -305,12 +299,12 @@ impl<'this> SpriteMaster3000<'this> {
 
     pub fn change_state(
         &mut self,
-        sparse_index: usize,
+        access: &mut Access<Sprite>,
         texture: &'static str,
     ) -> Result<(), &'static str> {
         let mut buffer_index = self.request_index();
         let tex_data = *self.map.get(texture).ok_or("wrong texture name")?;
-        let sprite = &mut *self.table.read::<Sprite>(sparse_index)?;
+        let sprite = &mut *access;
 
         if tex_data.tex_x as f32 == sprite.tex_x
             && tex_data.tex_y as f32 == sprite.tex_y
